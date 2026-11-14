@@ -564,6 +564,8 @@ export default function App() {
   const [formAttachments, setFormAttachments] = useState([]);
   const [formPDF, setFormPDF] = useState('');
   const [formVideo, setFormVideo] = useState('');
+  const [formAudioStartSeconds, setFormAudioStartSeconds] = useState('');
+  const [formPdfPage, setFormPdfPage] = useState('');
   const [formLanguage, setFormLanguage] = useState('پښتو');
   const [formMadhhab, setFormMadhhab] = useState('');
   const [formResourceType, setFormResourceType] = useState('درس');
@@ -803,6 +805,16 @@ export default function App() {
     updateHomeDesign({ [target]: color }, folderKey);
   }
 
+  function adjustCustomColor(amount) {
+    const raw = designCustomColor.trim();
+    if (!/^#[0-9A-Fa-f]{6}$/.test(raw)) {
+      Alert.alert('ناسم رنګ', 'لومړی د رنګ HEX کوډ ولیکئ، لکه #12A4EF.'); return;
+    }
+    const rgb = [1, 3, 5].map(index => parseInt(raw.slice(index, index + 2), 16));
+    const adjusted = rgb.map(channel => Math.max(0, Math.min(255, Math.round(amount > 0 ? channel + (255 - channel) * amount : channel * (1 + amount)))));
+    setDesignCustomColor('#' + adjusted.map(value => value.toString(16).padStart(2, '0')).join('').toUpperCase());
+  }
+
   async function saveBooks(updated) {
     setBooks(updated);
     await saveData(STORAGE.books, updated);
@@ -936,6 +948,8 @@ export default function App() {
     setFormAttachments([]);
     setFormPDF('');
     setFormVideo('');
+    setFormAudioStartSeconds('');
+    setFormPdfPage('');
     setFormLanguage('پښتو');
     setFormMadhhab('');
     setFormResourceType('درس');
@@ -1327,6 +1341,24 @@ export default function App() {
       Alert.alert('فولډر وټاکئ', 'د ټاکلي اصلي فولډر له لېست څخه یو فرعي فولډر هم وټاکئ.');
       return;
     }
+    const audioStartRaw = String(formAudioStartSeconds || '').trim();
+    let parsedOptionalAudioStart = null;
+    if (audioStartRaw) {
+      const timeParts = audioStartRaw.split(':');
+      parsedOptionalAudioStart = timeParts.length === 2
+        ? Number(timeParts[0]) * 60 + Number(timeParts[1])
+        : Number(audioStartRaw);
+      if (!Number.isFinite(parsedOptionalAudioStart) || parsedOptionalAudioStart < 0 || (timeParts.length === 2 && (!/^\d+$/.test(timeParts[0]) || !/^\d{1,2}$/.test(timeParts[1]) || Number(timeParts[1]) > 59))) {
+        Alert.alert('ناسم د آډیو وخت', 'وخت په ثانیو یا د دقیقې:ثانیې په بڼه ولیکئ؛ لکه 95 یا 01:35.');
+        return;
+      }
+    }
+    const pdfPageRaw = String(formPdfPage || '').trim();
+    const parsedOptionalPdfPage = pdfPageRaw ? Number(pdfPageRaw) : null;
+    if (pdfPageRaw && (!Number.isInteger(parsedOptionalPdfPage) || parsedOptionalPdfPage < 1)) {
+      Alert.alert('ناسم PDF مخ', 'د PDF مخ باید مثبت بشپړ عدد وي، لکه 12.');
+      return;
+    }
 
     if (screen === 'arabicBookEditor') {
       const existingBook = editingGlobalItemId ? globalItems.find(item => item.id === editingGlobalItemId) : null;
@@ -1342,6 +1374,8 @@ export default function App() {
         audio: formAudio,
         audioTracks: formAudioTracks.length ? formAudioTracks : (formAudio ? [{ id: `audio-${Date.now()}`, name: 'آډیو', uri: formAudio }] : []),
         attachments: formAttachments,
+        audioStartSeconds: parsedOptionalAudioStart,
+        pdfPage: parsedOptionalPdfPage,
         section: selectedSection,
         folder: selectedFolder,
         folderParent: formFolderParentChoice || '',
@@ -1368,6 +1402,8 @@ export default function App() {
       attachments: formAttachments,
       pdf: formPDF,
       video: formVideo,
+      audioStartSeconds: parsedOptionalAudioStart,
+      pdfPage: parsedOptionalPdfPage,
       scholar: formScholar.trim(),
       language: formLanguage,
       madhhab: formMadhhab.trim(),
@@ -1515,7 +1551,7 @@ export default function App() {
       audioItemRef.current = item;
       audioQueueRef.current = getAudioQueue();
       audioFinishHandledRef.current = false;
-      let startAt = Number.isFinite(requestedPosition) ? requestedPosition : 0;
+      let startAt = Number.isFinite(requestedPosition) ? requestedPosition : Math.max(0, Number(item.audioStartSeconds || 0)) * 1000;
       if (!Number.isFinite(requestedPosition)) {
         const saved = await AsyncStorage.getItem(STORAGE.audioProgress);
         if (saved) {
@@ -1668,8 +1704,8 @@ export default function App() {
       Alert.alert('PDF نشته', 'د دې درس لپاره PDF فایل نه دی ثبت شوی.');
       return;
     }
-    let targetPage = page;
-    if (!targetPage) {
+    let targetPage = page || item.pdfPage || null;
+    if (!page) {
       try {
         const saved = await AsyncStorage.getItem(STORAGE.pdfProgress);
         if (saved) {
@@ -2949,6 +2985,8 @@ export default function App() {
     setFormAttachments(Array.isArray(item.attachments) ? item.attachments : []);
     setFormPDF(item.pdf || '');
     setFormVideo(item.video || '');
+    setFormAudioStartSeconds(item.audioStartSeconds != null ? String(item.audioStartSeconds) : '');
+    setFormPdfPage(item.pdfPage != null ? String(item.pdfPage) : '');
     setFormLanguage(item.language || 'پښتو');
     setFormMadhhab(item.madhhab || '');
     setFormResourceType(item.resourceCategory || item.resourceType || 'درس');
@@ -2990,6 +3028,57 @@ export default function App() {
     setScreen('lessonEditor');
   }
 
+  function getGeneralAssignmentKey(section = selectedSection, parent = selectedFolderParent, child = selectedFolder) {
+    return `${canonicalSection(section)}::${parent}::${child}`;
+  }
+
+  function getAssignedGeneralMaterialRows() {
+    const rows = folderAdmin.generalMaterialAssignments?.[getGeneralAssignmentKey()] || [];
+    return rows.map(row => typeof row === 'string' ? { itemId: row } : row).filter(row => row?.itemId);
+  }
+
+  function getAssignedGeneralMaterialIds() {
+    return getAssignedGeneralMaterialRows().map(row => row.itemId);
+  }
+
+  function getGeneralMaterialAssignment(itemId) {
+    return getAssignedGeneralMaterialRows().find(row => row.itemId === itemId) || null;
+  }
+
+  async function toggleGeneralMaterialAssignment(itemId) {
+    const key = getGeneralAssignmentKey();
+    const assignments = { ...(folderAdmin.generalMaterialAssignments || {}) };
+    const current = getAssignedGeneralMaterialRows();
+    assignments[key] = current.some(row => row.itemId === itemId)
+      ? current.filter(row => row.itemId !== itemId)
+      : [...current, { itemId, audioStartSeconds: null, pdfPage: null }];
+    if (!assignments[key].length) delete assignments[key];
+    await saveFolderAdmin({ ...folderAdmin, generalMaterialAssignments: assignments });
+  }
+
+  async function saveGeneralMaterialAssignmentPoint(itemId, field, rawValue) {
+    const value = String(rawValue || '').trim();
+    let parsed = null;
+    if (value) {
+      if (field === 'audioStartSeconds') {
+        const parts = value.split(':');
+        parsed = parts.length === 2 ? Number(parts[0]) * 60 + Number(parts[1]) : Number(value);
+        if (!Number.isFinite(parsed) || parsed < 0 || (parts.length === 2 && (!/^\d+$/.test(parts[0]) || !/^\d{1,2}$/.test(parts[1]) || Number(parts[1]) > 59))) {
+          Alert.alert('ناسم آډیو وخت', 'وخت په ثانیو یا دقیقې:ثانیې ولیکئ؛ لکه 90 یا 01:30.'); return;
+        }
+      } else {
+        parsed = Number(value);
+        if (!Number.isInteger(parsed) || parsed < 1) { Alert.alert('ناسم PDF مخ', 'د PDF مخ مثبت بشپړ عدد ولیکئ.'); return; }
+      }
+    }
+    const key = getGeneralAssignmentKey();
+    const assignments = { ...(folderAdmin.generalMaterialAssignments || {}) };
+    const rows = getAssignedGeneralMaterialRows();
+    const next = rows.map(row => row.itemId === itemId ? { ...row, [field]: parsed } : row);
+    assignments[key] = next;
+    await saveFolderAdmin({ ...folderAdmin, generalMaterialAssignments: assignments });
+  }
+
   function getGeneralMaterialItems() {
     const local = globalItems.filter(item => item.isGeneralMaterial === true && item.section === selectedSection && (
       generalMaterialsScope === 'subfolder'
@@ -2997,8 +3086,9 @@ export default function App() {
         : item.generalScope === 'main' && item.folder === selectedFolder
     ));
     if (generalMaterialsScope !== 'subfolder' || !selectedFolderParent) return local;
-    const inherited = globalItems.filter(item => item.isGeneralMaterial === true && item.generalScope === 'main' && item.section === selectedSection && item.folder === selectedFolderParent);
-    return [...inherited.map(item => ({ ...item, _inheritedGeneral: true })), ...local];
+    const selectedAssignments = getAssignedGeneralMaterialRows();
+    const linked = globalItems.filter(item => selectedAssignments.some(row => row.itemId === item.id) && item.isGeneralMaterial === true && item.generalScope === 'main' && item.section === selectedSection && item.folder === selectedFolderParent);
+    return [...linked.map(item => { const link = selectedAssignments.find(row => row.itemId === item.id) || {}; return { ...item, audioStartSeconds: link.audioStartSeconds ?? item.audioStartSeconds, pdfPage: link.pdfPage ?? item.pdfPage, _inheritedGeneral: true, _linkedAudioStartSeconds: link.audioStartSeconds, _linkedPdfPage: link.pdfPage }; }), ...local];
   }
 
   // ==================================================
@@ -3087,11 +3177,24 @@ export default function App() {
         if ((parent.children || []).includes(name)) { Alert.alert('خبرتیا', 'دا فرعي فولډر له مخکې شته.'); return; }
         parent.children = (parent.children || []).map(x => x === oldName ? name : x);
       }
-      await saveSectionFolderRows(selectedSection, rows);
+      const sectionFolders = { ...(folderAdmin.sectionFolders || {}), [canonicalSection(selectedSection)]: rows };
+      const generalMaterialAssignments = { ...(folderAdmin.generalMaterialAssignments || {}) };
+      const assignmentPrefix = `${canonicalSection(selectedSection)}::${level === 'root' ? oldName : selectedFolderParent}::`;
+      Object.keys(generalMaterialAssignments).forEach(key => {
+        if (level === 'root' && key.startsWith(assignmentPrefix)) {
+          const nextKey = `${canonicalSection(selectedSection)}::${name}::${key.slice(assignmentPrefix.length)}`;
+          generalMaterialAssignments[nextKey] = generalMaterialAssignments[key]; delete generalMaterialAssignments[key];
+        } else if (level === 'child' && key === `${canonicalSection(selectedSection)}::${selectedFolderParent}::${oldName}`) {
+          const nextKey = `${canonicalSection(selectedSection)}::${selectedFolderParent}::${name}`;
+          generalMaterialAssignments[nextKey] = generalMaterialAssignments[key]; delete generalMaterialAssignments[key];
+        }
+      });
+      await saveFolderAdmin({ ...folderAdmin, sectionFolders, generalMaterialAssignments });
       const updatedItems = globalItems.map(item => {
         if (canonicalSection(item.section) !== selectedSection) return item;
-        if (level === 'root' && item.folder === oldName) return { ...item, folder: name };
-        if (level === 'child' && item.folder === oldName) return { ...item, folder: name };
+        if (level === 'root' && item.folder === oldName && !item.folderParent) return { ...item, folder: name };
+        if (level === 'root' && (item.folderParent === oldName || item.generalParentFolder === oldName)) return { ...item, folderParent: item.folderParent === oldName ? name : item.folderParent, generalParentFolder: item.generalParentFolder === oldName ? name : item.generalParentFolder };
+        if (level === 'child' && item.folder === oldName && (item.folderParent || '') === selectedFolderParent) return { ...item, folder: name };
         return item;
       });
       if (updatedItems.some((item, i) => item !== globalItems[i])) await saveGlobalItems(updatedItems);
@@ -3120,19 +3223,31 @@ export default function App() {
         const rows = getSectionFolders(selectedSection).map(row => ({ ...row, children: Array.isArray(row.children) ? [...row.children] : undefined }));
         if (level === 'root') {
           const target = rows.find(row => row.name === name);
-          const names = [name, ...(target?.children || [])];
+          const childNames = target?.children || [];
           const remaining = rows.filter(row => row.name !== name);
           if (!remaining.some(row => row.name === 'نور پخواني مواد')) remaining.push({ name: 'نور پخواني مواد' });
-          await saveSectionFolderRows(selectedSection, remaining);
-          const moved = globalItems.map(item => canonicalSection(item.section) === selectedSection && names.includes(item.folder) ? { ...item, folder: 'نور پخواني مواد' } : item);
+          const sectionFolders = { ...(folderAdmin.sectionFolders || {}), [canonicalSection(selectedSection)]: remaining };
+          const generalMaterialAssignments = { ...(folderAdmin.generalMaterialAssignments || {}) };
+          Object.keys(generalMaterialAssignments).forEach(key => { if (key.startsWith(`${canonicalSection(selectedSection)}::${name}::`)) delete generalMaterialAssignments[key]; });
+          await saveFolderAdmin({ ...folderAdmin, sectionFolders, generalMaterialAssignments });
+          const moved = globalItems.map(item => {
+            if (canonicalSection(item.section) !== selectedSection) return item;
+            const belongsToRoot = (item.folder === name && !item.folderParent) || item.folderParent === name || item.generalParentFolder === name;
+            return belongsToRoot && (item.folder === name || childNames.includes(item.folder) || item.folderParent === name)
+              ? { ...item, folder: 'نور پخواني مواد', folderParent: '', generalParentFolder: '' }
+              : item;
+          });
           if (moved.some((item, i) => item !== globalItems[i])) await saveGlobalItems(moved);
         } else {
           const parent = rows.find(row => row.name === selectedFolderParent);
           if (!parent) return;
           parent.children = (parent.children || []).filter(x => x !== name);
           if (!rows.some(row => row.name === 'نور پخواني مواد')) rows.push({ name: 'نور پخواني مواد' });
-          await saveSectionFolderRows(selectedSection, rows);
-          const moved = globalItems.map(item => canonicalSection(item.section) === selectedSection && item.folder === name ? { ...item, folder: 'نور پخواني مواد' } : item);
+          const sectionFolders = { ...(folderAdmin.sectionFolders || {}), [canonicalSection(selectedSection)]: rows };
+          const generalMaterialAssignments = { ...(folderAdmin.generalMaterialAssignments || {}) };
+          delete generalMaterialAssignments[`${canonicalSection(selectedSection)}::${selectedFolderParent}::${name}`];
+          await saveFolderAdmin({ ...folderAdmin, sectionFolders, generalMaterialAssignments });
+          const moved = globalItems.map(item => canonicalSection(item.section) === selectedSection && item.folder === name && (item.folderParent || '') === selectedFolderParent ? { ...item, folder: 'نور پخواني مواد', folderParent: '' } : item);
           if (moved.some((item, i) => item !== globalItems[i])) await saveGlobalItems(moved);
         }
       }}
@@ -3635,24 +3750,14 @@ export default function App() {
                     </TouchableOpacity>
                   ))}
                 </View>
-                <View style={[styles.homePrayerItem, { borderTopWidth: 1, borderTopColor: COLORS.border }]}>
-                  <Text style={styles.homePrayerIcon}>🌤️</Text>
-                  <Text style={styles.homePrayerName}>اشراق (تقریبي)</Text>
-                  <Text style={styles.homePrayerTime}>{prayerTimes?.sunrise ? formatTime(new Date(prayerTimes.sunrise.getTime() + 15 * 60000)) : '--:--'}</Text>
+                <View style={{ flexDirection: 'row-reverse', alignItems: 'center', justifyContent: 'space-between', borderTopWidth: 1, borderTopColor: COLORS.border, paddingTop: 5, marginTop: 2 }}>
+                  <Text style={[styles.homePrayerRefreshText, { fontSize: 10, flex: 1 }]} numberOfLines={1}>
+                    🌤️ اشراق: {prayerTimes?.sunrise ? formatTime(new Date(prayerTimes.sunrise.getTime() + 15 * 60000)) : '--:--'}
+                  </Text>
+                  <TouchableOpacity onPress={refreshPrayerTimes} style={[styles.homePrayerRefresh, { paddingVertical: 2, marginTop: 0 }]} activeOpacity={0.8}>
+                    {locationLoading ? <ActivityIndicator color={COLORS.gold} /> : <Text style={[styles.homePrayerRefreshText, { fontSize: 10 }]} numberOfLines={1}>{settings.city || t('خپل موقعیت وټاکئ')} · ⟳ {t('وختونه تازه کړئ')}</Text>}
+                  </TouchableOpacity>
                 </View>
-                <TouchableOpacity
-                  onPress={refreshPrayerTimes}
-                  style={styles.homePrayerRefresh}
-                  activeOpacity={0.8}
-                >
-                  {locationLoading ? (
-                    <ActivityIndicator color={COLORS.gold} />
-                  ) : (
-                    <Text style={styles.homePrayerRefreshText}>
-                      {settings.city || t('خپل موقعیت وټاکئ')}  ·  ⟳ {t('وختونه تازه کړئ')}
-                    </Text>
-                  )}
-                </TouchableOpacity>
               </View>
 
               {/* اته عمومي علمي فولډرونه؛ پخوانۍ ۱۶ برخې دننه مدغم دي */}
@@ -4330,7 +4435,27 @@ export default function App() {
         {screen === 'generalMaterials' && (
           <ScrollView contentContainerStyle={styles.pageContent} keyboardShouldPersistTaps="always">
             <PageHeader title="عمومي مواد" subtitle={generalMaterialsScope === 'subfolder' ? `${selectedFolderParent} · ${selectedFolder}` : `${selectedSection} · ${selectedFolder}`} onBack={goBack} />
-            <Text style={styles.smallMuted}>{generalMaterialsScope === 'subfolder' ? 'د دې فرعي فولډر خپل مواد او د اصلي فولډر شریک شوي عمومي مواد دلته ښکاري. شریک شوي مواد نقل نه کېږي؛ اصلي نسخه یې کارول کېږي.' : 'هغه کتابونه، درسونه، PDF او آډیو دلته وساتئ چې د دې اصلي فولډر له ټولو فرعي برخو سره تړاو لري.'}</Text>
+            <Text style={styles.smallMuted}>{generalMaterialsScope === 'subfolder' ? 'یوازې هغه عمومي مواد به دلته ښکاري چې ته یې په خپله دې فرعي فولډر ته وټاکې. د اصلي فولډر فایلونه په اوتومات ډول نه خپرېږي؛ اصلي فایل یوازې یو ځل ساتل کېږي.' : 'هغه کتابونه، درسونه، PDF او آډیو دلته وساتئ چې د دې اصلي فولډر عمومي مواد وي.'}</Text>
+            {generalMaterialsScope === 'subfolder' && selectedFolderParent ? (
+              <View style={styles.formCard}>
+                <Text style={[styles.cardHeading, { color: settings.headingColor }]}>له اصلي فولډر څخه مواد په لاس وټاکئ</Text>
+                {globalItems.filter(row => row.isGeneralMaterial === true && row.generalScope === 'main' && row.section === selectedSection && row.folder === selectedFolderParent).map(row => {
+                  const checked = getAssignedGeneralMaterialIds().includes(row.id);
+                  return <TouchableOpacity key={row.id} onPress={() => toggleGeneralMaterialAssignment(row.id)} style={{ flexDirection: 'row-reverse', alignItems: 'center', paddingVertical: 9, borderBottomWidth: 1, borderBottomColor: COLORS.border }}>
+                    <Ionicons name={checked ? 'checkbox' : 'square-outline'} size={21} color={checked ? COLORS.gold : COLORS.muted} />
+                    <View style={{ flex: 1, marginRight: 9 }}>
+                      <Text style={{ color: COLORS.white, textAlign: 'right' }}>{row.title}</Text>
+                      <Text style={styles.smallMuted}>{row.resourceCategory || row.resourceType || 'مواد'} · {row.audio || row.audioTracks?.length ? 'آډیو ' : ''}{row.pdf ? 'PDF' : ''}</Text>
+                      {checked ? <View style={{ flexDirection: 'row-reverse', gap: 6, marginTop: 5 }}>
+                        <TextInput defaultValue={getGeneralMaterialAssignment(row.id)?.audioStartSeconds != null ? String(getGeneralMaterialAssignment(row.id).audioStartSeconds) : ''} onEndEditing={event => saveGeneralMaterialAssignmentPoint(row.id, 'audioStartSeconds', event.nativeEvent.text)} placeholder="آډیو پیل 00:45 (اختیاري)" placeholderTextColor={COLORS.muted} style={[styles.designColorInput, { flex: 1, minWidth: 0, paddingVertical: 5 }]} />
+                        <TextInput defaultValue={getGeneralMaterialAssignment(row.id)?.pdfPage != null ? String(getGeneralMaterialAssignment(row.id).pdfPage) : ''} onEndEditing={event => saveGeneralMaterialAssignmentPoint(row.id, 'pdfPage', event.nativeEvent.text)} placeholder="PDF مخ (اختیاري)" keyboardType="number-pad" placeholderTextColor={COLORS.muted} style={[styles.designColorInput, { flex: 1, minWidth: 0, paddingVertical: 5 }]} />
+                      </View> : null}
+                    </View>
+                  </TouchableOpacity>;
+                })}
+                {globalItems.filter(row => row.isGeneralMaterial === true && row.generalScope === 'main' && row.section === selectedSection && row.folder === selectedFolderParent).length === 0 && <Text style={styles.smallMuted}>په اصلي فولډر کې عمومي مواد نشته.</Text>}
+              </View>
+            ) : null}
             <GoldButton title="＋ نوی عمومي مواد اضافه کړئ" onPress={openAddGeneralMaterial} />
             {getGeneralMaterialItems().map(item => (
               <View key={`${item.id}-${item._inheritedGeneral ? 'shared' : 'local'}`} style={styles.lessonCard}>
@@ -4339,7 +4464,7 @@ export default function App() {
                   <Text style={styles.smallMuted}>{item.scholar || 'عالم/لیکوال نه دی ټاکل شوی'} · {item.resourceCategory || item.resourceType || 'مواد'}{item._inheritedGeneral ? ' · د اصلي فولډر شریک شوی' : ' · د همدې فولډر مواد'}</Text>
                   <Text style={styles.smallMuted}>{item.pdf ? 'PDF · ' : ''}{item.audio || item.audioTracks?.length ? 'آډیو · ' : ''}{item.video ? 'ویډیو' : ''}</Text>
                 </TouchableOpacity>
-                <TouchableOpacity onPress={() => openEditGlobalItem(item)} style={{ padding: 8 }}><Ionicons name="create-outline" size={21} color={COLORS.gold} /></TouchableOpacity>
+                <TouchableOpacity onPress={() => openEditGlobalItem(item._inheritedGeneral ? (globalItems.find(row => row.id === item.id) || item) : item)} style={{ padding: 8 }}><Ionicons name="create-outline" size={21} color={COLORS.gold} /></TouchableOpacity>
               </View>
             ))}
             {getGeneralMaterialItems().length === 0 && <Text style={styles.emptyText}>تر اوسه عمومي مواد نه دي ثبت شوي.</Text>}
@@ -4458,6 +4583,10 @@ export default function App() {
               ) : null}
               <GoldButton title="▣ اختیاري ویډیو وټاکئ" secondary onPress={pickVideo} />
               {formVideo ? <Text style={styles.fileSelected}>ویډیو انتخاب شوه ✓</Text> : <Text style={styles.smallMuted}>ویډیو هم اختیاري ده.</Text>}
+              <Text style={[styles.cardHeading, { color: settings.headingColor, marginTop: 10 }]}>د فرعي برخې د پیل نقطه (اختیاري)</Text>
+              <Field textColor={settings.textColor} label="د آډیو پیل وخت (ثانیې یا دقیقې:ثانیې)" value={formAudioStartSeconds} onChangeText={setFormAudioStartSeconds} placeholder="تش پرېښودل = له پیل څخه؛ بېلګه 01:35" keyboardType="default" />
+              <Field textColor={settings.textColor} label="د PDF د پیل مخ" value={formPdfPage} onChangeText={setFormPdfPage} placeholder="تش پرېښودل = له لومړي مخ څخه" keyboardType="numeric" />
+              <Text style={styles.smallMuted}>دا دواړه اختیارونه اختیاري دي؛ که یې تش پرېږدئ، آډیو او PDF له خپل عادي پیل څخه پرانیستل کېږي.</Text>
               <GoldButton title="＋ نور فایلونه یوځای وټاکئ (Word، PowerPoint، انځور، PDF، ویډیو...)" secondary onPress={pickLessonAttachments} />
               {formAttachments.length > 0 ? (
                 <View style={{ marginTop: 8 }}>
@@ -4545,14 +4674,14 @@ export default function App() {
               </View>
             ) : selectedItem?.audio ? (
               <>
-                <GoldButton title="▶ بیان واوره" onPress={() => startAudio(selectedItem)} />
+                <GoldButton title="▶ بیان واوره" onPress={() => startAudio(selectedItem, selectedItem.audioStartSeconds != null ? Number(selectedItem.audioStartSeconds) * 1000 : undefined)} />
                 <GoldButton title="♫ آډیو شریکول" secondary onPress={() => shareFile(selectedItem.audio, 'audio/*')} />
               </>
             ) : null}
 
             {selectedItem?.pdf ? (
               <>
-                <GoldButton title="▤ PDF کتاب ولوله" onPress={() => openPdf(selectedItem, 1)} />
+                <GoldButton title="▤ PDF کتاب ولوله" onPress={() => openPdf(selectedItem, selectedItem.pdfPage || 1)} />
                 <GoldButton title={t("PDF شریکول")} secondary onPress={() => shareFile(selectedItem.pdf, 'application/pdf')} />
               </>
             ) : null}
@@ -5530,7 +5659,14 @@ export default function App() {
                 ))}
               </View>
               <Text style={styles.designLabel}>{t("خپل خوښ رنګ ولیکئ (HEX)")}</Text>
-              <TextInput value={designCustomColor} onChangeText={setDesignCustomColor} autoCapitalize="characters" placeholder="#12A4EF" placeholderTextColor={COLORS.muted} style={styles.designColorInput} />
+              <View style={{ flexDirection: 'row-reverse', alignItems: 'center', gap: 8 }}>
+                <View style={{ width: 34, height: 34, borderRadius: 8, backgroundColor: /^#[0-9A-Fa-f]{6}$/.test(designCustomColor) ? designCustomColor : '#17231B', borderWidth: 1, borderColor: COLORS.gold }} />
+                <TextInput value={designCustomColor} onChangeText={setDesignCustomColor} autoCapitalize="characters" placeholder="#12A4EF" placeholderTextColor={COLORS.muted} style={[styles.designColorInput, { flex: 1 }]} />
+              </View>
+              <View style={styles.designOptionRow}>
+                <TouchableOpacity onPress={() => adjustCustomColor(0.18)} style={styles.designChoice}><Text style={styles.designChoiceText}>رنګ روښانه / کمزوری</Text></TouchableOpacity>
+                <TouchableOpacity onPress={() => adjustCustomColor(-0.18)} style={styles.designChoice}><Text style={styles.designChoiceText}>رنګ تیز / تیاره</Text></TouchableOpacity>
+              </View>
               <View style={styles.designOptionRow}>
                 {[{ key: 'pageBackground', label: 'د پاڼې شالید' }, { key: 'headerBackground', label: 'سرلیک' }, { key: 'prayerBackground', label: 'د لمانځه کارت' }, { key: 'navBackground', label: 'لاندې مینو' }, { key: 'folderBackground', label: 'د فولډر شالید' }, { key: 'folderTextColor', label: 'لیکل' }, { key: 'folderIconColor', label: 'نښې' }, { key: 'folderBorderColor', label: 'چوکاټ' }].map(item => (
                   <TouchableOpacity key={item.key} onPress={() => applyCustomHomeColor(item.key)} style={styles.designChoice}><Text style={styles.designChoiceText}>{t(item.label)}</Text></TouchableOpacity>
