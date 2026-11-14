@@ -453,6 +453,7 @@ export default function App() {
   const [editingGlobalItemId, setEditingGlobalItemId] = useState('');
   const [generalMaterialsScope, setGeneralMaterialsScope] = useState('');
   const [formFolderParentChoice, setFormFolderParentChoice] = useState('');
+  const [formLinkedGeneralMaterialId, setFormLinkedGeneralMaterialId] = useState('');
   const [settingsSearch, setSettingsSearch] = useState('');
   const [showColorSettings, setShowColorSettings] = useState(false);
   const [selectedAcademicSurah, setSelectedAcademicSurah] = useState(null);
@@ -566,6 +567,8 @@ export default function App() {
   const [formVideo, setFormVideo] = useState('');
   const [formAudioStartSeconds, setFormAudioStartSeconds] = useState('');
   const [formPdfPage, setFormPdfPage] = useState('');
+  const [formLinkedAudioStartSeconds, setFormLinkedAudioStartSeconds] = useState('');
+  const [formLinkedPdfPage, setFormLinkedPdfPage] = useState('');
   const [formLanguage, setFormLanguage] = useState('پښتو');
   const [formMadhhab, setFormMadhhab] = useState('');
   const [formResourceType, setFormResourceType] = useState('درس');
@@ -950,6 +953,9 @@ export default function App() {
     setFormVideo('');
     setFormAudioStartSeconds('');
     setFormPdfPage('');
+    setFormLinkedGeneralMaterialId('');
+    setFormLinkedAudioStartSeconds('');
+    setFormLinkedPdfPage('');
     setFormLanguage('پښتو');
     setFormMadhhab('');
     setFormResourceType('درس');
@@ -1124,6 +1130,7 @@ export default function App() {
         }
         setFormAudioTracks(previous => [...previous, ...added]);
         if (!formAudioTracks.length && added.length) setFormAudio(added[0].uri);
+        if (!formTitle.trim() && added[0]?.name) setFormTitle(added[0].name);
         if (!formDescription && added[0]?.name) setFormDescription(added[0].name);
         Alert.alert('فایلونه انتخاب شول', `${added.length} غږیز فایلونه اضافه شول.`);
       }
@@ -1176,6 +1183,7 @@ export default function App() {
         });
       }
       setFormAttachments(previous => [...previous, ...added]);
+      if (!formTitle.trim() && added[0]?.name) setFormTitle(added[0].name);
       Alert.alert('فایلونه انتخاب شول', `${added.length} اضافي فایلونه د درس لپاره ټاکل شول.`);
     } catch (error) {
       Alert.alert('ستونزه', 'اضافي فایلونه انتخاب نه شول.');
@@ -1210,6 +1218,7 @@ export default function App() {
 
         const stableUri = await keepPickedFile(file, 'pdf');
         setFormPDF(stableUri);
+        if (!formTitle.trim() && file.name) setFormTitle(file.name);
 
         if (!formDescription) {
           setFormDescription(file.name || '');
@@ -1333,8 +1342,10 @@ export default function App() {
       Alert.alert('د آډیو وختونو نقشه ناسمه ده', 'دا بڼه وکاروئ: 2:15=16:20; 2:16=17:45. لومړی سورت:آیت او بیا د آډیو د پیل وخت (دقیقې:ثانیې).');
       return;
     }
-    if (!formTitle.trim()) {
-      Alert.alert('خبرتیا', 'د درس نوم ولیکئ.');
+    const inferredFileTitle = formAudioTracks[0]?.name || ((formPDF || formVideo) ? String(formDescription || '').trim() : '') || formAttachments[0]?.name || '';
+    const effectiveFormTitle = String(formTitle || '').trim() || inferredFileTitle;
+    if (!effectiveFormTitle) {
+      Alert.alert('د نوم اړتیا', 'د درس نوم ولیکئ، یا یو فایل وټاکئ چې نوم یې په اتومات ډول واخیستل شي.');
       return;
     }
     if (!quranMode && formFolderParentChoice && !selectedFolder) {
@@ -1359,13 +1370,24 @@ export default function App() {
       Alert.alert('ناسم PDF مخ', 'د PDF مخ باید مثبت بشپړ عدد وي، لکه 12.');
       return;
     }
+    const linkedAudioRaw = String(formLinkedAudioStartSeconds || '').trim();
+    const linkedAudioParts = linkedAudioRaw.split(':');
+    const parsedLinkedAudioStart = linkedAudioRaw ? (linkedAudioParts.length === 2 ? Number(linkedAudioParts[0]) * 60 + Number(linkedAudioParts[1]) : Number(linkedAudioRaw)) : null;
+    if (linkedAudioRaw && (!Number.isFinite(parsedLinkedAudioStart) || parsedLinkedAudioStart < 0 || (linkedAudioParts.length === 2 && (!/^\d+$/.test(linkedAudioParts[0]) || !/^\d{1,2}$/.test(linkedAudioParts[1]) || Number(linkedAudioParts[1]) > 59)))) {
+      Alert.alert('ناسم آډیو وخت', 'د تړلي فایل وخت په ثانیو یا دقیقې:ثانیې ولیکئ؛ لکه 01:35.'); return;
+    }
+    const linkedPdfRaw = String(formLinkedPdfPage || '').trim();
+    const parsedLinkedPdfPage = linkedPdfRaw ? Number(linkedPdfRaw) : null;
+    if (linkedPdfRaw && (!Number.isInteger(parsedLinkedPdfPage) || parsedLinkedPdfPage < 1)) {
+      Alert.alert('ناسم PDF مخ', 'د تړلي PDF مخ باید مثبت عدد وي.'); return;
+    }
 
     if (screen === 'arabicBookEditor') {
       const existingBook = editingGlobalItemId ? globalItems.find(item => item.id === editingGlobalItemId) : null;
       const book = {
         ...(existingBook || {}),
         id: existingBook?.id || `arabic-book-${Date.now()}`, 
-        title: formTitle.trim(),
+        title: effectiveFormTitle,
         description: formDescription,
         scholar: formScholar.trim(),
         source: formSource.trim(),
@@ -1391,10 +1413,17 @@ export default function App() {
     }
 
     const existingItem = editingGlobalItemId ? globalItems.find(item => item.id === editingGlobalItemId) : null;
+    const linkedGeneralMaterial = formLinkedGeneralMaterialId
+      ? getLessonLinkableGeneralMaterials().find(row => row.id === formLinkedGeneralMaterialId)
+      : null;
+    if (formLinkedGeneralMaterialId && !linkedGeneralMaterial) {
+      Alert.alert('عمومي مواد ونه موندل شول', 'له ټاکلي اصلي یا فرعي فولډر څخه مواد بیا وټاکئ.');
+      return;
+    }
     const newItem = {
       ...(existingItem || {}),
       id: existingItem?.id || Date.now().toString(),
-      title: formTitle.trim(),
+      title: effectiveFormTitle,
       description: formDescription,
       text: formText,
       audio: formAudioTracks[0]?.uri || formAudio,
@@ -1404,6 +1433,9 @@ export default function App() {
       video: formVideo,
       audioStartSeconds: parsedOptionalAudioStart,
       pdfPage: parsedOptionalPdfPage,
+      linkedGeneralMaterialId: formLinkedGeneralMaterialId || '',
+      linkedAudioStartSeconds: parsedLinkedAudioStart,
+      linkedPdfPage: parsedLinkedPdfPage,
       scholar: formScholar.trim(),
       language: formLanguage,
       madhhab: formMadhhab.trim(),
@@ -2987,6 +3019,9 @@ export default function App() {
     setFormVideo(item.video || '');
     setFormAudioStartSeconds(item.audioStartSeconds != null ? String(item.audioStartSeconds) : '');
     setFormPdfPage(item.pdfPage != null ? String(item.pdfPage) : '');
+    setFormLinkedGeneralMaterialId(item.linkedGeneralMaterialId || '');
+    setFormLinkedAudioStartSeconds(item.linkedAudioStartSeconds != null ? String(item.linkedAudioStartSeconds) : '');
+    setFormLinkedPdfPage(item.linkedPdfPage != null ? String(item.linkedPdfPage) : '');
     setFormLanguage(item.language || 'پښتو');
     setFormMadhhab(item.madhhab || '');
     setFormResourceType(item.resourceCategory || item.resourceType || 'درس');
@@ -3045,6 +3080,50 @@ export default function App() {
     return getAssignedGeneralMaterialRows().find(row => row.itemId === itemId) || null;
   }
 
+
+  function getQuranAyahAssignmentKey(surahNumber, ayahNumber, type = selectedAcademicType) {
+    return `${type}::${Number(surahNumber)}::${Number(ayahNumber)}`;
+  }
+
+  function getQuranAyahAssignedRows(surahNumber = selectedAcademicSurah?.number, ayahNumber = selectedAcademicAyah) {
+    const key = getQuranAyahAssignmentKey(surahNumber, ayahNumber);
+    const rows = folderAdmin.quranAcademicAssignments?.[key] || [];
+    return rows.map(row => typeof row === 'string' ? { itemId: row } : row).filter(row => row?.itemId);
+  }
+
+  async function toggleQuranAyahAssignment(itemId, surahNumber = selectedAcademicSurah?.number, ayahNumber = selectedAcademicAyah) {
+    const key = getQuranAyahAssignmentKey(surahNumber, ayahNumber);
+    const assignments = { ...(folderAdmin.quranAcademicAssignments || {}) };
+    const rows = getQuranAyahAssignedRows(surahNumber, ayahNumber);
+    assignments[key] = rows.some(row => row.itemId === itemId)
+      ? rows.filter(row => row.itemId !== itemId)
+      : [...rows, { itemId, audioStartSeconds: null, pdfPage: null }];
+    if (!assignments[key].length) delete assignments[key];
+    await saveFolderAdmin({ ...folderAdmin, quranAcademicAssignments: assignments });
+  }
+
+  async function saveQuranAyahAssignmentPoint(itemId, field, rawValue, surahNumber = selectedAcademicSurah?.number, ayahNumber = selectedAcademicAyah) {
+    const value = String(rawValue || '').trim();
+    let parsed = null;
+    if (value) {
+      if (field === 'audioStartSeconds') {
+        const parts = value.split(':');
+        parsed = parts.length === 2 ? Number(parts[0]) * 60 + Number(parts[1]) : Number(value);
+        if (!Number.isFinite(parsed) || parsed < 0 || (parts.length === 2 && (!/^\d+$/.test(parts[0]) || !/^\d{1,2}$/.test(parts[1]) || Number(parts[1]) > 59))) {
+          Alert.alert('ناسم آډیو وخت', 'وخت په ثانیو یا دقیقې:ثانیې ولیکئ؛ لکه 01:35.'); return;
+        }
+      } else {
+        parsed = Number(value);
+        if (!Number.isInteger(parsed) || parsed < 1) { Alert.alert('ناسم PDF مخ', 'د PDF مخ مثبت بشپړ عدد ولیکئ.'); return; }
+      }
+    }
+    const key = getQuranAyahAssignmentKey(surahNumber, ayahNumber);
+    const assignments = { ...(folderAdmin.quranAcademicAssignments || {}) };
+    const rows = getQuranAyahAssignedRows(surahNumber, ayahNumber);
+    assignments[key] = rows.map(row => row.itemId === itemId ? { ...row, [field]: parsed } : row);
+    await saveFolderAdmin({ ...folderAdmin, quranAcademicAssignments: assignments });
+  }
+
   async function toggleGeneralMaterialAssignment(itemId) {
     const key = getGeneralAssignmentKey();
     const assignments = { ...(folderAdmin.generalMaterialAssignments || {}) };
@@ -3077,6 +3156,22 @@ export default function App() {
     const next = rows.map(row => row.itemId === itemId ? { ...row, [field]: parsed } : row);
     assignments[key] = next;
     await saveFolderAdmin({ ...folderAdmin, generalMaterialAssignments: assignments });
+  }
+
+  // د درس لپاره یوازې د ټاکل شوي اصلي/فرعي فولډر عمومي فایلونه؛ هېڅ فایل په اتومات ډول نه نښلول کېږي.
+  function getLessonLinkableGeneralMaterials() {
+    const mainFolderName = formFolderParentChoice || selectedFolder;
+    if (!mainFolderName) return [];
+    const mainFolderItems = globalItems.filter(item =>
+      item.isGeneralMaterial === true && item.generalScope === 'main' &&
+      item.section === selectedSection && item.folder === mainFolderName
+    ).map(item => ({ ...item, _lessonSourceScope: 'اصلي فولډر' }));
+    const subFolderItems = formFolderParentChoice && selectedFolder ? globalItems.filter(item =>
+      item.isGeneralMaterial === true && item.generalScope === 'subfolder' &&
+      item.section === selectedSection && item.folder === selectedFolder &&
+      (item.generalParentFolder || item.folderParent || '') === formFolderParentChoice
+    ).map(item => ({ ...item, _lessonSourceScope: 'فرعي فولډر' })) : [];
+    return [...mainFolderItems, ...subFolderItems];
   }
 
   function getGeneralMaterialItems() {
@@ -3144,7 +3239,8 @@ export default function App() {
     const name = newSubFolderName.trim();
     if (!name) { Alert.alert('خبرتیا', 'د فرعي فولډر نوم ولیکئ.'); return; }
     const rows = getSectionFolders(selectedSection).map(row => ({ ...row, children: Array.isArray(row.children) ? [...row.children] : undefined }));
-    const parent = rows.find(row => row.name === selectedFolderParent);
+    const parentName = selectedFolderParent || selectedFolder;
+    const parent = rows.find(row => row.name === parentName);
     if (!parent) return;
     const children = parent.children || [];
     if (children.includes(name)) { Alert.alert('خبرتیا', 'دا فرعي فولډر له مخکې شته.'); return; }
@@ -3165,6 +3261,7 @@ export default function App() {
       const updatedItems = globalItems.map(item => canonicalSection(item.section) === selectedSection && item.folder === oldName ? { ...item, folder: name } : item);
       if (updatedItems.some((item, i) => item !== globalItems[i])) await saveGlobalItems(updatedItems);
     } else {
+      const parentFolderName = selectedFolderParent || selectedFolder;
       const rows = getSectionFolders(selectedSection).map(row => ({ ...row, children: Array.isArray(row.children) ? [...row.children] : undefined }));
       if (level === 'root') {
         if (rows.some(row => row.name === name)) { Alert.alert('خبرتیا', 'دا فولډر له مخکې شته.'); return; }
@@ -3172,20 +3269,20 @@ export default function App() {
         if (!row) return;
         row.name = name;
       } else {
-        const parent = rows.find(x => x.name === selectedFolderParent);
+        const parent = rows.find(x => x.name === parentFolderName);
         if (!parent) return;
         if ((parent.children || []).includes(name)) { Alert.alert('خبرتیا', 'دا فرعي فولډر له مخکې شته.'); return; }
         parent.children = (parent.children || []).map(x => x === oldName ? name : x);
       }
       const sectionFolders = { ...(folderAdmin.sectionFolders || {}), [canonicalSection(selectedSection)]: rows };
       const generalMaterialAssignments = { ...(folderAdmin.generalMaterialAssignments || {}) };
-      const assignmentPrefix = `${canonicalSection(selectedSection)}::${level === 'root' ? oldName : selectedFolderParent}::`;
+      const assignmentPrefix = `${canonicalSection(selectedSection)}::${level === 'root' ? oldName : parentFolderName}::`;
       Object.keys(generalMaterialAssignments).forEach(key => {
         if (level === 'root' && key.startsWith(assignmentPrefix)) {
           const nextKey = `${canonicalSection(selectedSection)}::${name}::${key.slice(assignmentPrefix.length)}`;
           generalMaterialAssignments[nextKey] = generalMaterialAssignments[key]; delete generalMaterialAssignments[key];
-        } else if (level === 'child' && key === `${canonicalSection(selectedSection)}::${selectedFolderParent}::${oldName}`) {
-          const nextKey = `${canonicalSection(selectedSection)}::${selectedFolderParent}::${name}`;
+        } else if (level === 'child' && key === `${canonicalSection(selectedSection)}::${parentFolderName}::${oldName}`) {
+          const nextKey = `${canonicalSection(selectedSection)}::${parentFolderName}::${name}`;
           generalMaterialAssignments[nextKey] = generalMaterialAssignments[key]; delete generalMaterialAssignments[key];
         }
       });
@@ -3194,7 +3291,7 @@ export default function App() {
         if (canonicalSection(item.section) !== selectedSection) return item;
         if (level === 'root' && item.folder === oldName && !item.folderParent) return { ...item, folder: name };
         if (level === 'root' && (item.folderParent === oldName || item.generalParentFolder === oldName)) return { ...item, folderParent: item.folderParent === oldName ? name : item.folderParent, generalParentFolder: item.generalParentFolder === oldName ? name : item.generalParentFolder };
-        if (level === 'child' && item.folder === oldName && (item.folderParent || '') === selectedFolderParent) return { ...item, folder: name };
+        if (level === 'child' && item.folder === oldName && (item.folderParent || '') === parentFolderName) return { ...item, folder: name };
         return item;
       });
       if (updatedItems.some((item, i) => item !== globalItems[i])) await saveGlobalItems(updatedItems);
@@ -3239,15 +3336,16 @@ export default function App() {
           });
           if (moved.some((item, i) => item !== globalItems[i])) await saveGlobalItems(moved);
         } else {
-          const parent = rows.find(row => row.name === selectedFolderParent);
+          const parentFolderName = selectedFolderParent || selectedFolder;
+          const parent = rows.find(row => row.name === parentFolderName);
           if (!parent) return;
           parent.children = (parent.children || []).filter(x => x !== name);
           if (!rows.some(row => row.name === 'نور پخواني مواد')) rows.push({ name: 'نور پخواني مواد' });
           const sectionFolders = { ...(folderAdmin.sectionFolders || {}), [canonicalSection(selectedSection)]: rows };
           const generalMaterialAssignments = { ...(folderAdmin.generalMaterialAssignments || {}) };
-          delete generalMaterialAssignments[`${canonicalSection(selectedSection)}::${selectedFolderParent}::${name}`];
+          delete generalMaterialAssignments[`${canonicalSection(selectedSection)}::${parentFolderName}::${name}`];
           await saveFolderAdmin({ ...folderAdmin, sectionFolders, generalMaterialAssignments });
-          const moved = globalItems.map(item => canonicalSection(item.section) === selectedSection && item.folder === name && (item.folderParent || '') === selectedFolderParent ? { ...item, folder: 'نور پخواني مواد', folderParent: '' } : item);
+          const moved = globalItems.map(item => canonicalSection(item.section) === selectedSection && item.folder === name && (item.folderParent || '') === parentFolderName ? { ...item, folder: 'نور پخواني مواد', folderParent: '' } : item);
           if (moved.some((item, i) => item !== globalItems[i])) await saveGlobalItems(moved);
         }
       }}
@@ -4204,6 +4302,7 @@ export default function App() {
                     </View>
                   </TouchableOpacity>
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7 }}>
+                    <TouchableOpacity onPress={() => { setSelectedFolder(folder.name); setSelectedFolderParent(''); setGeneralMaterialsScope('main'); setScreen('generalMaterials'); }}><Ionicons name="library-outline" size={19} color={COLORS.gold} /></TouchableOpacity>
                     <TouchableOpacity onPress={() => moveAdminFolder(selectedSection, index, -1)}><Text style={styles.deleteIcon}>↑</Text></TouchableOpacity>
                     <TouchableOpacity onPress={() => moveAdminFolder(selectedSection, index, 1)}><Text style={styles.deleteIcon}>↓</Text></TouchableOpacity>
                     <TouchableOpacity onPress={() => { setSelectedFolderParent(folder.name); setScreen('sectionSubFolders'); }}><Ionicons name="folder-open-outline" size={19} color={COLORS.gold} /></TouchableOpacity>
@@ -4229,6 +4328,7 @@ export default function App() {
         {screen === 'sectionSubFolders' && (
           <ScrollView contentContainerStyle={styles.pageContent} keyboardShouldPersistTaps="always" keyboardDismissMode="none">
             <PageHeader title={selectedFolderParent} subtitle={selectedSection} onBack={goBack} />
+            <GoldButton title="▣ د دې اصلي فولډر عمومي کتابونه، PDF او آډیو" secondary onPress={() => { setSelectedFolder(selectedFolderParent); setSelectedFolderParent(''); setGeneralMaterialsScope('main'); setScreen('generalMaterials'); }} />
             {selectedFolderParent !== 'اسماء او صفات' && (
               <View style={styles.formCard}>
                 <Text style={[styles.cardHeading, { color: settings.headingColor }]}>فرعي فولډرونه اداره کړئ</Text>
@@ -4334,6 +4434,34 @@ export default function App() {
         {screen === 'quranAcademicAyahDetails' && selectedAcademicSurah && selectedAcademicAyah && (
           <ScrollView contentContainerStyle={styles.pageContent} keyboardShouldPersistTaps="always">
             <PageHeader title={`سورة ${selectedAcademicSurah.name} · آیت ${selectedAcademicAyah}`} subtitle={selectedAcademicType} onBack={goBack} />
+            <View style={styles.formCard}>
+              <Text style={[styles.cardHeading, { color: settings.headingColor }]}>د ټول سورت له عمومي فایلونو څخه د همدې آیت برخه ونښلوئ</Text>
+              <Text style={styles.smallMuted}>د ټول سورت PDF یا آډیو یو ځل په عمومي موادو کې ثبت کړئ؛ بیا یې د همدې آیت اړوند مخ او د غږ وخت دلته وټاکئ.</Text>
+              {getQuranAcademicItems(selectedAcademicSurah.number, null).filter(row => !String(row.academicAyahNumber || '').trim()).map(source => {
+                const link = getQuranAyahAssignedRows(selectedAcademicSurah.number, selectedAcademicAyah).find(row => row.itemId === source.id);
+                return (
+                  <View key={source.id} style={{ paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: COLORS.border }}>
+                    <TouchableOpacity onPress={() => toggleQuranAyahAssignment(source.id)} style={{ flexDirection: 'row-reverse', alignItems: 'center' }}>
+                      <Ionicons name={link ? 'checkbox' : 'square-outline'} size={21} color={link ? COLORS.gold : COLORS.muted} />
+                      <Text style={{ color: COLORS.white, marginRight: 8, flex: 1, textAlign: 'right' }}>{source.title} {source.pdf ? '· PDF' : ''} {source.audio ? '· آډیو' : ''}</Text>
+                    </TouchableOpacity>
+                    {link ? (
+                      <>
+                        <View style={{ flexDirection: 'row-reverse', gap: 6, marginTop: 6 }}>
+                          <TextInput defaultValue={link.audioStartSeconds != null ? String(link.audioStartSeconds) : ''} onEndEditing={event => saveQuranAyahAssignmentPoint(source.id, 'audioStartSeconds', event.nativeEvent.text)} placeholder="آډیو پیل 01:25" placeholderTextColor={COLORS.muted} style={[styles.designColorInput, { flex: 1, minWidth: 0, paddingVertical: 5 }]} />
+                          <TextInput defaultValue={link.pdfPage != null ? String(link.pdfPage) : ''} onEndEditing={event => saveQuranAyahAssignmentPoint(source.id, 'pdfPage', event.nativeEvent.text)} placeholder="PDF مخ" keyboardType="number-pad" placeholderTextColor={COLORS.muted} style={[styles.designColorInput, { flex: 1, minWidth: 0, paddingVertical: 5 }]} />
+                        </View>
+                        <View style={{ flexDirection: 'row-reverse', flexWrap: 'wrap', gap: 6, marginTop: 6 }}>
+                          {!!source.audio && <GoldButton title="♫ د آیت غږ واوره" onPress={() => startAudio(source, link.audioStartSeconds != null ? link.audioStartSeconds * 1000 : (source.audioStartSeconds || 0) * 1000)} />}
+                          {!!source.pdf && <GoldButton title="▤ د آیت PDF مخ" secondary onPress={() => openPdf(source, link.pdfPage || source.pdfPage || 1)} />}
+                        </View>
+                      </>
+                    ) : null}
+                  </View>
+                );
+              })}
+              {getQuranAcademicItems(selectedAcademicSurah.number, null).filter(row => !String(row.academicAyahNumber || '').trim()).length === 0 && <Text style={styles.smallMuted}>لومړی د سورت په عمومي موادو کې بشپړ PDF یا آډیو ثبت کړئ.</Text>}
+            </View>
             <GoldButton title="＋ د همدې آیت درس / مواد اضافه کړئ" onPress={openAddQuranAcademicLesson} />
             {getQuranAcademicItems(selectedAcademicSurah.number, selectedAcademicAyah).map(item => <TouchableOpacity key={item.id} style={styles.lessonCard} onPress={() => openItem(item)}><View style={styles.flexText}><Text style={styles.lessonTitle}>{item.title}</Text><Text style={styles.smallMuted}>{item.scholar || ''} {item.pdf ? '· PDF' : ''} {item.audio ? '· آډیو' : ''}</Text></View><Text style={styles.lessonArrow}>‹</Text></TouchableOpacity>)}
             {getQuranAcademicItems(selectedAcademicSurah.number, selectedAcademicAyah).length === 0 && <Text style={styles.emptyText}>د دې آیت لپاره لا درس نه دی ثبت شوی.</Text>}
@@ -4374,6 +4502,33 @@ export default function App() {
             />
 
             <GoldButton title={selectedFolderParent ? '▣ د دې فرعي فولډر عمومي مواد' : '▣ د دې اصلي فولډر عمومي مواد'} secondary onPress={openGeneralMaterials} />
+
+            {!selectedFolderParent && (
+              <View style={styles.formCard}>
+                <Text style={[styles.cardHeading, { color: settings.headingColor }]}>د دې اصلي فولډر فرعي فولډرونه</Text>
+                <Field textColor={settings.textColor} label="نوی فرعي فولډر" value={newSubFolderName} onChangeText={setNewSubFolderName} placeholder="د فرعي فولډر نوم" />
+                <GoldButton title="＋ فرعي فولډر اضافه کړئ" onPress={addSubFolder} />
+                {(getSectionFolders(selectedSection).find(row => row.name === selectedFolder)?.children || []).map((child, index) => (
+                  <View key={child} style={styles.lessonCard}>
+                    <TouchableOpacity style={{ flex: 1, flexDirection: 'row-reverse', alignItems: 'center' }} onPress={() => openFolder(child, selectedFolder)}>
+                      <Ionicons name="folder-outline" size={20} color={COLORS.gold} />
+                      <Text style={[styles.lessonTitle, { flex: 1, marginRight: 8 }]}>{child}</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity onPress={() => moveAdminFolder(`${selectedSection}::${selectedFolder}`, index, -1)}><Text style={styles.deleteIcon}>↑</Text></TouchableOpacity>
+                    <TouchableOpacity onPress={() => moveAdminFolder(`${selectedSection}::${selectedFolder}`, index, 1)}><Text style={styles.deleteIcon}>↓</Text></TouchableOpacity>
+                    <TouchableOpacity onPress={() => { setEditingFolderKey(`child:${child}`); setEditingFolderName(child); }}><Ionicons name="create-outline" size={19} color={COLORS.gold} /></TouchableOpacity>
+                    <TouchableOpacity onPress={() => deleteManagedFolder('child', child)}><Ionicons name="trash-outline" size={19} color={COLORS.red} /></TouchableOpacity>
+                  </View>
+                ))}
+                {editingFolderKey.startsWith('child:') && (
+                  <View style={styles.formCard}>
+                    <Field textColor={settings.textColor} label="د فرعي فولډر نوی نوم" value={editingFolderName} onChangeText={setEditingFolderName} placeholder="نوی نوم" />
+                    <GoldButton title="نوم خوندي کړئ" onPress={() => renameManagedFolder('child', editingFolderKey.slice(6))} />
+                    <GoldButton title="لغوه" secondary onPress={() => setEditingFolderKey('')} />
+                  </View>
+                )}
+              </View>
+            )}
 
             {(selectedFolder === 'کتب تسعه' || selectedFolder === 'صحاح سته' || selectedFolder === 'مشکاة المصابيح') ? <GoldButton title={selectedFolder === 'مشکاة المصابيح' ? '📚 مشکاة المصابيح پرانیزئ' : '📚 د کتب تسعه کتابونه پرانیزئ'} secondary onPress={() => { setSittaCollection(selectedFolder === 'مشکاة المصابيح' ? 'mishkat' : 'kutubTisah'); setScreen('sittaBooks'); }} /> : null}
 
@@ -4416,11 +4571,12 @@ export default function App() {
                   </Text>
                 </TouchableOpacity>
 
-                <TouchableOpacity
-                  onPress={() => deleteGlobalItem(item.id)}
-                >
-                  <Text style={styles.deleteIcon}>{t("حذف")}</Text>
-                </TouchableOpacity>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                  <TouchableOpacity onPress={() => openEditGlobalItem(item)}><Ionicons name="create-outline" size={20} color={COLORS.gold} /></TouchableOpacity>
+                  <TouchableOpacity onPress={() => deleteGlobalItem(item.id)}>
+                    <Text style={styles.deleteIcon}>{t("حذف")}</Text>
+                  </TouchableOpacity>
+                </View>
               </View>
                 ))}
               </>
@@ -4510,21 +4666,47 @@ export default function App() {
               <Field textColor={settings.textColor} label="نوی عالم / لیکوال (که په لېست کې نه وي)" value={formScholar} onChangeText={setFormScholar} placeholder="نوم ولیکئ یا له پورته لېست څخه یې وټاکئ" />
               <Text style={[styles.cardHeading, { color: settings.headingColor, marginTop: 8 }]}>علمي برخه وټاکئ</Text>
               <View style={{ flexDirection: 'row-reverse', flexWrap: 'wrap', gap: 7 }}>
-                {SECTIONS.map(section => <TouchableOpacity key={section} onPress={() => { setSelectedSection(section); const first = getSectionFolders(section)[0]?.name || ''; setSelectedFolder(first); setSelectedFolderParent(''); setFormFolderParentChoice(''); if (generalMaterialsScope) setGeneralMaterialsScope('main'); }} style={{ paddingVertical: 7, paddingHorizontal: 10, borderRadius: 9, borderWidth: 1, borderColor: selectedSection === section ? COLORS.gold : COLORS.border, backgroundColor: selectedSection === section ? COLORS.card2 : COLORS.card }}><Text style={{ color: COLORS.white }}>{section}</Text></TouchableOpacity>)}
+                {SECTIONS.map(section => <TouchableOpacity key={section} onPress={() => { setSelectedSection(section); const first = getSectionFolders(section)[0]?.name || ''; setSelectedFolder(first); setSelectedFolderParent(''); setFormFolderParentChoice(''); setFormLinkedGeneralMaterialId(''); if (generalMaterialsScope) setGeneralMaterialsScope('main'); }} style={{ paddingVertical: 7, paddingHorizontal: 10, borderRadius: 9, borderWidth: 1, borderColor: selectedSection === section ? COLORS.gold : COLORS.border, backgroundColor: selectedSection === section ? COLORS.card2 : COLORS.card }}><Text style={{ color: COLORS.white }}>{section}</Text></TouchableOpacity>)}
               </View>
               <Text style={[styles.cardHeading, { color: settings.headingColor, marginTop: 8 }]}>اصلي فولډر وټاکئ</Text>
               <View style={{ flexDirection: 'row-reverse', flexWrap: 'wrap', gap: 7 }}>
-                {getSectionFolders(selectedSection).map(folder => <TouchableOpacity key={folder.name} onPress={() => { setSelectedFolder(folder.name); setSelectedFolderParent(''); setFormFolderParentChoice(''); if (generalMaterialsScope) setGeneralMaterialsScope('main'); }} style={{ paddingVertical: 7, paddingHorizontal: 10, borderRadius: 9, borderWidth: 1, borderColor: selectedFolder === folder.name && !formFolderParentChoice ? COLORS.gold : COLORS.border, backgroundColor: selectedFolder === folder.name && !formFolderParentChoice ? COLORS.card2 : COLORS.card }}><Text style={{ color: COLORS.white }}>{folder.name}</Text></TouchableOpacity>)}
+                {getSectionFolders(selectedSection).map(folder => <TouchableOpacity key={folder.name} onPress={() => { setSelectedFolder(folder.name); setSelectedFolderParent(''); setFormFolderParentChoice(''); setFormLinkedGeneralMaterialId(''); if (generalMaterialsScope) setGeneralMaterialsScope('main'); }} style={{ paddingVertical: 7, paddingHorizontal: 10, borderRadius: 9, borderWidth: 1, borderColor: selectedFolder === folder.name && !formFolderParentChoice ? COLORS.gold : COLORS.border, backgroundColor: selectedFolder === folder.name && !formFolderParentChoice ? COLORS.card2 : COLORS.card }}><Text style={{ color: COLORS.white }}>{folder.name}</Text></TouchableOpacity>)}
               </View>
               {getSectionFolders(selectedSection).some(folder => (folder.children || []).length > 0) && <>
                 <Text style={[styles.cardHeading, { color: settings.headingColor, marginTop: 8 }]}>فرعي فولډر ته د موادو ټاکل</Text>
                 <View style={{ flexDirection: 'row-reverse', flexWrap: 'wrap', gap: 7 }}>
-                  {getSectionFolders(selectedSection).filter(folder => (folder.children || []).length > 0).map(folder => <TouchableOpacity key={folder.name} onPress={() => { setFormFolderParentChoice(folder.name); setSelectedFolderParent(folder.name); setSelectedFolder(''); if (generalMaterialsScope) setGeneralMaterialsScope('subfolder'); }} style={{ paddingVertical: 7, paddingHorizontal: 10, borderRadius: 9, borderWidth: 1, borderColor: formFolderParentChoice === folder.name ? COLORS.gold : COLORS.border, backgroundColor: formFolderParentChoice === folder.name ? COLORS.card2 : COLORS.card }}><Text style={{ color: COLORS.white }}>{folder.name} – فرعي</Text></TouchableOpacity>)}
+                  {getSectionFolders(selectedSection).filter(folder => (folder.children || []).length > 0).map(folder => <TouchableOpacity key={folder.name} onPress={() => { setFormFolderParentChoice(folder.name); setSelectedFolderParent(folder.name); setSelectedFolder(''); setFormLinkedGeneralMaterialId(''); setFormLinkedAudioStartSeconds(''); setFormLinkedPdfPage(''); if (generalMaterialsScope) setGeneralMaterialsScope('subfolder'); }} style={{ paddingVertical: 7, paddingHorizontal: 10, borderRadius: 9, borderWidth: 1, borderColor: formFolderParentChoice === folder.name ? COLORS.gold : COLORS.border, backgroundColor: formFolderParentChoice === folder.name ? COLORS.card2 : COLORS.card }}><Text style={{ color: COLORS.white }}>{folder.name} – فرعي</Text></TouchableOpacity>)}
                 </View>
                 {!!formFolderParentChoice && <View style={{ flexDirection: 'row-reverse', flexWrap: 'wrap', gap: 7, marginTop: 7 }}>
-                  {(getSectionFolders(selectedSection).find(folder => folder.name === formFolderParentChoice)?.children || []).map(child => <TouchableOpacity key={child} onPress={() => setSelectedFolder(child)} style={{ paddingVertical: 7, paddingHorizontal: 10, borderRadius: 9, borderWidth: 1, borderColor: selectedFolder === child ? COLORS.gold : COLORS.border, backgroundColor: selectedFolder === child ? COLORS.card2 : COLORS.card }}><Text style={{ color: COLORS.white }}>{child}</Text></TouchableOpacity>)}
+                  {(getSectionFolders(selectedSection).find(folder => folder.name === formFolderParentChoice)?.children || []).map(child => <TouchableOpacity key={child} onPress={() => { setSelectedFolder(child); setFormLinkedGeneralMaterialId(''); setFormLinkedAudioStartSeconds(''); setFormLinkedPdfPage(''); }} style={{ paddingVertical: 7, paddingHorizontal: 10, borderRadius: 9, borderWidth: 1, borderColor: selectedFolder === child ? COLORS.gold : COLORS.border, backgroundColor: selectedFolder === child ? COLORS.card2 : COLORS.card }}><Text style={{ color: COLORS.white }}>{child}</Text></TouchableOpacity>)}
                 </View>}
               </>}
+              {!!(formFolderParentChoice || selectedFolder) && (
+                <View style={{ marginTop: 12, paddingTop: 10, borderTopWidth: 1, borderTopColor: COLORS.border }}>
+                  <Text style={[styles.cardHeading, { color: settings.headingColor }]}>د درس لپاره د اصلي یا فرعي فولډر فایل په لاس وټاکئ (اختیاري)</Text>
+                  <Text style={styles.smallMuted}>تر څو فایل دلته انتخاب نه کړئ، د اصلي او فرعي فولډر هېڅ عمومي فایل به له دې درس سره نه نښلول کېږي.</Text>
+                  {getLessonLinkableGeneralMaterials().map(row => (
+                    <TouchableOpacity key={row.id} onPress={() => {
+                      const nextId = formLinkedGeneralMaterialId === row.id ? '' : row.id;
+                      setFormLinkedGeneralMaterialId(nextId);
+                      if (!nextId) { setFormLinkedAudioStartSeconds(''); setFormLinkedPdfPage(''); }
+                    }} style={{ flexDirection: 'row-reverse', alignItems: 'center', paddingVertical: 8 }}>
+                      <Ionicons name={formLinkedGeneralMaterialId === row.id ? 'radio-button-on' : 'radio-button-off'} size={20} color={COLORS.gold} />
+                      <View style={{ marginRight: 8, flex: 1 }}>
+                        <Text style={{ color: COLORS.white, textAlign: 'right' }}>{row.title} {row.pdf ? '· PDF' : ''} {row.audio || row.audioTracks?.length ? '· آډیو' : ''}</Text>
+                        <Text style={[styles.smallMuted, { textAlign: 'right' }]}>{row._lessonSourceScope}</Text>
+                      </View>
+                    </TouchableOpacity>
+                  ))}
+                  {getLessonLinkableGeneralMaterials().length === 0 && <Text style={styles.smallMuted}>په ټاکل شوي اصلي او فرعي فولډر کې عمومي فایل نشته.</Text>}
+                  {formLinkedGeneralMaterialId ? (
+                    <>
+                      <Field textColor={settings.textColor} label="د ټاکلي فایل د آډیو پیل (ثانیې یا 01:35)" value={formLinkedAudioStartSeconds} onChangeText={setFormLinkedAudioStartSeconds} placeholder="تش پرېږدئ: له اصلي پیل څخه" />
+                      <Field textColor={settings.textColor} label="د ټاکلي PDF مخ" value={formLinkedPdfPage} onChangeText={setFormLinkedPdfPage} placeholder="تش پرېږدئ: له لومړي مخ څخه" keyboardType="numeric" />
+                    </>
+                  ) : <Text style={styles.smallMuted}>یو فایل انتخاب کړئ؛ فایل نه نقل کېږي، یوازې دې درس ته نښلول کېږي.</Text>}
+                </View>
+              )}
             </View>
             <Field textColor={settings.textColor} label="سرچینه او حواله (اختیاري)" value={formSource} onChangeText={setFormSource} placeholder="کتاب، ناشر، ویبپاڼه یا حواله" />
             <Field textColor={settings.textColor} label="د نشر / کارولو اجازه (اختیاري)" value={formPermission} onChangeText={setFormPermission} placeholder="اجازه، عامه ملکیت یا د جواز معلومات" />
@@ -4639,6 +4821,20 @@ export default function App() {
               {!!selectedItem?.source && <Text style={styles.smallMuted}>سرچینه: {selectedItem.source}</Text>}
               {!!selectedItem?.permission && <Text style={styles.smallMuted}>اجازه: {selectedItem.permission}</Text>}
             </View>
+
+            {selectedItem?.linkedGeneralMaterialId ? (() => {
+              const source = globalItems.find(row => row.id === selectedItem.linkedGeneralMaterialId);
+              if (!source) return <Text style={styles.smallMuted}>د دې درس تړلی اصلي فایل نور نه موندل کېږي؛ اصلي مواد بیا وټاکئ.</Text>;
+              return (
+                <View style={styles.formCard}>
+                  <Text style={[styles.cardHeading, { color: settings.headingColor }]}>له ټاکل شوي فولډر سره تړلي مواد</Text>
+                  <Text style={styles.smallMuted}>{source.title} · {source.generalScope === 'subfolder' ? 'فرعي فولډر' : 'اصلي فولډر'}</Text>
+                  {!!(source.audio || source.audioTracks?.length) && <GoldButton title="♫ د ټاکلي فایل آډیو واوره" onPress={() => startAudio(source, selectedItem.linkedAudioStartSeconds != null ? selectedItem.linkedAudioStartSeconds * 1000 : (source.audioStartSeconds != null ? source.audioStartSeconds * 1000 : 0))} />}
+                  {!!source.pdf && <GoldButton title="▤ د ټاکلي PDF مخ پرانیزه" secondary onPress={() => openPdf(source, selectedItem.linkedPdfPage || source.pdfPage || 1)} />}
+                  <Text style={styles.smallMuted}>دا فایل یوازې یو ځل ساتل شوی؛ دلته یوازې د همدې درس لپاره ټاکل شوی مخ او د آډیو پیل کارول کېږي.</Text>
+                </View>
+              );
+            })() : null}
 
             {selectedItem?.resourceType === 'quran' ? (
               <View style={styles.formCard}>
