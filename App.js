@@ -421,6 +421,10 @@ export default function App() {
 
   const [screen, setScreen] = useState('home');
   const [previousScreen, setPreviousScreen] = useState('home');
+  const navigationStackRef = useRef([]);
+  const currentScreenRef = useRef('home');
+  const skipNavigationCaptureRef = useRef(false);
+  const [bookmarkEditor, setBookmarkEditor] = useState({ type: '', id: '', title: '', note: '' });
   const [designFolderKey, setDesignFolderKey] = useState('section_0');
   const [designCustomColor, setDesignCustomColor] = useState('#E4C879');
 
@@ -451,6 +455,7 @@ export default function App() {
   const [selectedFolderParent, setSelectedFolderParent] = useState('');
   const [selectedItem, setSelectedItem] = useState(null);
   const [editingGlobalItemId, setEditingGlobalItemId] = useState('');
+  const [fileNameEdit, setFileNameEdit] = useState(null);
   const [generalMaterialsScope, setGeneralMaterialsScope] = useState('');
   const [formFolderParentChoice, setFormFolderParentChoice] = useState('');
   const [formLinkedGeneralMaterialId, setFormLinkedGeneralMaterialId] = useState('');
@@ -862,7 +867,21 @@ export default function App() {
   // 13 - د سکرینونو بدلول
   // ==================================================
 
+  // د ټولو سکرینونو واقعي مسیر ثبتوي؛ که setScreen مستقیم هم وکارول شي، شاته تګ منظم پاتې کېږي.
+  useEffect(() => {
+    if (skipNavigationCaptureRef.current) {
+      skipNavigationCaptureRef.current = false;
+      currentScreenRef.current = screen;
+      return;
+    }
+    if (currentScreenRef.current !== screen) {
+      navigationStackRef.current.push(currentScreenRef.current);
+      currentScreenRef.current = screen;
+    }
+  }, [screen]);
+
   function navigate(nextScreen) {
+    if (nextScreen === screen) return;
     setPreviousScreen(screen);
     setScreen(nextScreen);
   }
@@ -870,7 +889,12 @@ export default function App() {
   function goBack() {
     if (screen === 'audioPlayer' || screen === 'pdfReader') {
       if (mediaReturnScreen === 'oldBook' && selectedBook) setSelectedItem(selectedBook);
-      setScreen(mediaReturnScreen || 'oldBook');
+    }
+    const previous = navigationStackRef.current.pop();
+    if (previous && previous !== screen) {
+      skipNavigationCaptureRef.current = true;
+      currentScreenRef.current = previous;
+      setScreen(previous);
       return;
     }
     const parents = {
@@ -917,7 +941,12 @@ export default function App() {
       pdfMarks: 'notes'
     };
 
-    setScreen(parents[screen] || 'home');
+    const fallback = screen === 'audioPlayer' || screen === 'pdfReader'
+      ? (mediaReturnScreen || 'oldBook')
+      : (parents[screen] || 'home');
+    skipNavigationCaptureRef.current = true;
+    currentScreenRef.current = fallback;
+    setScreen(fallback);
   }
 
   useEffect(() => {
@@ -1199,6 +1228,33 @@ export default function App() {
     const updatedItem = { ...item, attachments };
     await saveGlobalItems(globalItems.map(row => row.id === item.id ? updatedItem : row));
     setSelectedItem(updatedItem);
+  }
+
+  async function saveRenamedMediaFile() {
+    if (!fileNameEdit || !selectedItem?.id) return;
+    const newName = String(fileNameEdit.value || '').trim();
+    if (!newName) { Alert.alert('خبرتیا', 'د فایل نوی نوم ولیکئ.'); return; }
+    const updatedItem = { ...selectedItem };
+    if (fileNameEdit.type === 'audio') {
+      updatedItem.audioTracks = (selectedItem.audioTracks || []).map((track, index) => {
+        const key = track.id || String(index);
+        if (key !== fileNameEdit.fileId) return track;
+        return { ...track, originalName: track.originalName || track.name || `غږیز کلیپ ${index + 1}`, name: newName };
+      });
+    } else if (fileNameEdit.type === 'attachment') {
+      updatedItem.attachments = (selectedItem.attachments || []).map((file, index) => {
+        const key = file.id || String(index);
+        if (key !== fileNameEdit.fileId) return file;
+        return { ...file, originalName: file.originalName || file.name || `ضمیمه ${index + 1}`, name: newName };
+      });
+    } else if (fileNameEdit.type === 'pdf') {
+      updatedItem.pdfOriginalName = updatedItem.pdfOriginalName || updatedItem.pdfDisplayName || 'PDF فایل';
+      updatedItem.pdfDisplayName = newName;
+    }
+    await saveGlobalItems(globalItems.map(row => row.id === updatedItem.id ? updatedItem : row));
+    setSelectedItem(updatedItem);
+    setFileNameEdit(null);
+    Alert.alert('بریالی شو', 'د فایل ښکاره کېدونکی نوم بدل شو؛ اصلي فایل او URI یې هماغسې خوندي پاتې شول.');
   }
 
   // ==================================================
@@ -1703,6 +1759,7 @@ export default function App() {
       id: `audio-${Date.now()}`,
       resourceId: item.id,
       resourceTitle: item.title || 'بې نومه بیان',
+      label: audioBookmarkText.trim() || `${item.title || 'بې نومه بیان'} – ${formatDuration(position)}`,
       uri: item.audio,
       positionMillis: Math.floor(position),
       note: audioBookmarkText.trim(),
@@ -1760,6 +1817,7 @@ export default function App() {
       id: `pdf-${Date.now()}`,
       resourceId: selectedItem.id,
       resourceTitle: selectedItem.title || 'بې نومه کتاب',
+      label: pdfBookmarkText.trim() || `${selectedItem.title || 'بې نومه کتاب'} – مخ ${Math.max(1, pdfCurrentPage || 1)}`,
       uri: selectedItem.pdf,
       page: Math.max(1, pdfCurrentPage || 1),
       note: pdfBookmarkText.trim(),
@@ -1785,6 +1843,30 @@ export default function App() {
       { text: 'نه', style: 'cancel' },
       { text: 'هو، حذف', style: 'destructive', onPress: () => savePdfMarks(pdfMarks.filter(mark => mark.id !== id)) }
     ]);
+  }
+
+  function openBookmarkEditor(type, mark) {
+    setBookmarkEditor({
+      type,
+      id: mark.id,
+      title: mark.label || mark.note || `${mark.resourceTitle || 'مواد'}${type === 'audio' ? ` – ${formatDuration(mark.positionMillis)}` : ` – مخ ${mark.page || 1}`}`,
+      note: mark.note || ''
+    });
+    navigate('bookmarkEditor');
+  }
+
+  async function saveBookmarkEditor() {
+    const { type, id, title, note } = bookmarkEditor;
+    if (!title.trim()) {
+      Alert.alert('خبرتیا', 'د نښې نوم ولیکئ.');
+      return;
+    }
+    if (type === 'audio') {
+      await saveAudioMarks(audioMarks.map(mark => mark.id === id ? { ...mark, label: title.trim(), note: note.trim(), updatedAt: new Date().toISOString() } : mark));
+    } else if (type === 'pdf') {
+      await savePdfMarks(pdfMarks.map(mark => mark.id === id ? { ...mark, label: title.trim(), note: note.trim(), updatedAt: new Date().toISOString() } : mark));
+    }
+    setScreen(type === 'audio' ? 'audioMarks' : 'pdfMarks');
   }
 
   function formatDuration(milliseconds) {
@@ -4861,12 +4943,23 @@ export default function App() {
                   <View key={track.id || `${selectedItem.id}-audio-${index}`} style={{ paddingVertical: 9, borderBottomWidth: 1, borderBottomColor: COLORS.border }}>
                     <Text style={[styles.lessonTitle, { color: COLORS.white }]}>{index + 1}. {track.name || `غږیز کلیپ ${index + 1}`}</Text>
                     <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 7, marginTop: 7 }}>
+                      {globalItems.some(row => row.id === selectedItem.id) ? <GoldButton title="✎ نوم بدلول" secondary onPress={() => setFileNameEdit({ type: 'audio', fileId: track.id || String(index), value: track.name || '' })} /> : null}
                       <GoldButton title="▶ واوره" onPress={() => startAudio({ ...selectedItem, id: `${selectedItem.id}::${track.id || index}`, title: `${selectedItem.title} – ${track.name || `کلیپ ${index + 1}`}`, audio: track.uri })} />
                       <GoldButton title="شریکول" secondary onPress={() => shareFile(track.uri, track.mimeType || 'audio/*')} />
                       {selectedItem.id && globalItems.some(row => row.id === selectedItem.id) ? <GoldButton title="حذف" secondary onPress={() => Alert.alert('کلیپ حذف', `«${track.name || 'غږیز کلیپ'}» حذف شي؟`, [{ text: 'نه', style: 'cancel' }, { text: 'هو، حذف', style: 'destructive', onPress: () => removeSavedAudioTrack(selectedItem, track.id) }])} /> : null}
                     </View>
                   </View>
                 ))}
+                {fileNameEdit?.type === 'audio' ? (
+                  <View style={{ marginTop: 10, padding: 10, borderWidth: 1, borderColor: COLORS.gold, borderRadius: 10 }}>
+                    <Text style={[styles.cardHeading, { color: settings.headingColor }]}>د آډیو نوی ښکاره کېدونکی نوم</Text>
+                    <Field textColor={settings.textColor} label="نوی نوم" value={fileNameEdit.value} onChangeText={value => setFileNameEdit(previous => ({ ...previous, value }))} placeholder="سم او لنډ نوم ولیکئ" />
+                    <View style={{ flexDirection: 'row', gap: 8 }}>
+                      <GoldButton title="نوم خوندي کړه" onPress={saveRenamedMediaFile} />
+                      <GoldButton title="لغوه" secondary onPress={() => setFileNameEdit(null)} />
+                    </View>
+                  </View>
+                ) : null}
               </View>
             ) : selectedItem?.audio ? (
               <>
@@ -4876,10 +4969,21 @@ export default function App() {
             ) : null}
 
             {selectedItem?.pdf ? (
-              <>
+              <View style={styles.formCard}>
+                <Text style={[styles.lessonTitle, { color: COLORS.white }]}>{selectedItem.pdfDisplayName || selectedItem.pdfOriginalName || 'PDF فایل'}</Text>
                 <GoldButton title="▤ PDF کتاب ولوله" onPress={() => openPdf(selectedItem, selectedItem.pdfPage || 1)} />
                 <GoldButton title={t("PDF شریکول")} secondary onPress={() => shareFile(selectedItem.pdf, 'application/pdf')} />
-              </>
+                {globalItems.some(row => row.id === selectedItem.id) ? <GoldButton title="✎ د PDF نوم بدلول" secondary onPress={() => setFileNameEdit({ type: 'pdf', fileId: 'pdf', value: selectedItem.pdfDisplayName || selectedItem.pdfOriginalName || 'PDF فایل' })} /> : null}
+                {fileNameEdit?.type === 'pdf' ? (
+                  <View style={{ marginTop: 8 }}>
+                    <Field textColor={settings.textColor} label="د PDF نوی ښکاره کېدونکی نوم" value={fileNameEdit.value} onChangeText={value => setFileNameEdit(previous => ({ ...previous, value }))} placeholder="سم نوم ولیکئ" />
+                    <View style={{ flexDirection: 'row', gap: 8 }}>
+                      <GoldButton title="نوم خوندي کړه" onPress={saveRenamedMediaFile} />
+                      <GoldButton title="لغوه" secondary onPress={() => setFileNameEdit(null)} />
+                    </View>
+                  </View>
+                ) : null}
+              </View>
             ) : null}
 
             {Array.isArray(selectedItem?.attachments) && selectedItem.attachments.length > 0 ? (
@@ -4891,8 +4995,18 @@ export default function App() {
                     <Text style={styles.smallMuted}>{file.size ? `${(file.size / (1024 * 1024)).toFixed(2)} MB` : (file.mimeType || 'فایل')}</Text>
                     <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 6 }}>
                       <GoldButton title="شریکول" secondary onPress={() => shareFile(file.uri, file.mimeType)} />
+                      {globalItems.some(row => row.id === selectedItem.id) ? <GoldButton title="✎ نوم بدلول" secondary onPress={() => setFileNameEdit({ type: 'attachment', fileId: file.id || String(index), value: file.name || '' })} /> : null}
                       {globalItems.some(row => row.id === selectedItem.id) ? <GoldButton title="حذف" secondary onPress={() => Alert.alert('فایل حذف', `«${file.name}» حذف شي؟`, [{ text: 'نه', style: 'cancel' }, { text: 'هو، حذف', style: 'destructive', onPress: () => removeSavedAttachment(selectedItem, file.id) }])} /> : null}
                     </View>
+                    {fileNameEdit?.type === 'attachment' && fileNameEdit.fileId === (file.id || String(index)) ? (
+                      <View style={{ marginTop: 8 }}>
+                        <Field textColor={settings.textColor} label="د فایل نوی ښکاره کېدونکی نوم" value={fileNameEdit.value} onChangeText={value => setFileNameEdit(previous => ({ ...previous, value }))} placeholder="سم نوم ولیکئ" />
+                        <View style={{ flexDirection: 'row', gap: 8 }}>
+                          <GoldButton title="نوم خوندي کړه" onPress={saveRenamedMediaFile} />
+                          <GoldButton title="لغوه" secondary onPress={() => setFileNameEdit(null)} />
+                        </View>
+                      </View>
+                    ) : null}
                   </View>
                 ))}
               </View>
@@ -4981,11 +5095,14 @@ export default function App() {
                     </Text>
                   </TouchableOpacity>
 
-                  <TouchableOpacity
-                    onPress={() => deleteNote(note.id)}
-                  >
-                    <Text style={styles.deleteIcon}>{t("حذف")}</Text>
-                  </TouchableOpacity>
+                  <View style={{ alignItems: 'center', gap: 8 }}>
+                    <TouchableOpacity onPress={() => openNote(note)}>
+                      <Text style={styles.bookmarkOpenText}>✎ سمون</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity onPress={() => deleteNote(note.id)}>
+                      <Text style={styles.deleteIcon}>{t("حذف")}</Text>
+                    </TouchableOpacity>
+                  </View>
                 </View>
               ))}
           </ScrollView>
@@ -5030,10 +5147,20 @@ export default function App() {
             <View style={styles.bookmarkCard}>
               <Text style={[styles.cardHeading, { color: settings.headingColor }]}>{t("دا ځای نښه او یادښت کړه")}</Text>
               <Text style={styles.bookmarkPosition}>{t("اوسنی وخت:")}{formatDuration(audioStatus.positionMillis)}</Text>
-              <Field textColor={settings.textColor} label={t("شخصي یادښت (اختیاري)")} value={audioBookmarkText} onChangeText={setAudioBookmarkText} placeholder={t("مهمه خبره دلته ولیکئ...")} multiline />
-              <GoldButton title="★ دا نقطه خوندي کړه" onPress={saveAudioBookmark} />
+              <Text style={styles.smallMuted}>لومړی د غږ په کرښه کې مطلوب وخت وټاکئ. که غواړئ، لاندې نوم یا یادښت ولیکئ؛ که تش یې پرېږدئ، د بیان نوم او وخت به په اتومات ډول د نښې نوم شي.</Text>
+              <Field textColor={settings.textColor} label="د نښې نوم یا شخصي یادښت (اختیاري)" value={audioBookmarkText} onChangeText={setAudioBookmarkText} placeholder="دلته خپل وضاحت ولیکئ..." multiline />
+              <GoldButton title="★ ټاکل شوې نقطه خوندي کړه" onPress={saveAudioBookmark} />
             </View>
             <GoldButton title={`د دې بیان ټولې نښې (${audioMarks.filter(mark => mark.resourceId === audioItemRef.current?.id).length})`} secondary onPress={() => setScreen('audioMarks')} />
+          </ScrollView>
+        )}
+
+        {screen === 'bookmarkEditor' && (
+          <ScrollView contentContainerStyle={styles.pageContent} keyboardShouldPersistTaps="always" keyboardDismissMode="none">
+            <PageHeader title="د نښې نوم او لیکنه سمول" subtitle="د خوندي شوې آډیو یا PDF نښې معلومات بدل کړئ" onBack={goBack} />
+            <Field textColor={settings.textColor} label="د نښې نوم" value={bookmarkEditor.title} onChangeText={value => setBookmarkEditor(old => ({ ...old, title: value }))} placeholder="د بیان یا موضوع نوم" />
+            <Field textColor={settings.textColor} label="شخصي لیکنه / وضاحت" value={bookmarkEditor.note} onChangeText={value => setBookmarkEditor(old => ({ ...old, note: value }))} placeholder="خپل وضاحت ولیکئ (اختیاري)" multiline />
+            <GoldButton title="بدلونونه خوندي کړه" onPress={saveBookmarkEditor} />
           </ScrollView>
         )}
 
@@ -5100,12 +5227,15 @@ export default function App() {
             {audioMarks.map(mark => (
               <View key={mark.id} style={styles.bookmarkListCard}>
                 <TouchableOpacity style={styles.flexText} onPress={() => openAudioMark(mark)}>
-                  <Text style={styles.lessonTitle}>{mark.resourceTitle}</Text>
-                  <Text style={styles.bookmarkPosition}>{formatDuration(mark.positionMillis)}</Text>
+                  <Text style={styles.lessonTitle}>{mark.label || mark.resourceTitle}</Text>
+                  <Text style={styles.bookmarkPosition}>{mark.resourceTitle} · {formatDuration(mark.positionMillis)}</Text>
                   {!!mark.note && <Text style={styles.smallMuted}>{mark.note}</Text>}
                   <Text style={styles.bookmarkOpenText}>{t("▶ له همدې ځایه واوره")}</Text>
                 </TouchableOpacity>
-                <TouchableOpacity onPress={() => deleteAudioMark(mark.id)}><Text style={styles.deleteIcon}>{t("حذف")}</Text></TouchableOpacity>
+                <View style={{ alignItems: 'center', gap: 8 }}>
+                  <TouchableOpacity onPress={() => openBookmarkEditor('audio', mark)}><Text style={styles.bookmarkOpenText}>✎ سمون</Text></TouchableOpacity>
+                  <TouchableOpacity onPress={() => deleteAudioMark(mark.id)}><Text style={styles.deleteIcon}>{t("حذف")}</Text></TouchableOpacity>
+                </View>
               </View>
             ))}
             {!audioMarks.length && <Text style={styles.emptyText}>{t("تر اوسه د آډیو کومه نښه نه ده خوندي شوې.")}</Text>}
@@ -5119,12 +5249,15 @@ export default function App() {
             {pdfMarks.map(mark => (
               <View key={mark.id} style={styles.bookmarkListCard}>
                 <TouchableOpacity style={styles.flexText} onPress={() => openPdfMark(mark)}>
-                  <Text style={styles.lessonTitle}>{mark.resourceTitle}</Text>
-                  <Text style={styles.bookmarkPosition}>مخ {mark.page}</Text>
+                  <Text style={styles.lessonTitle}>{mark.label || mark.resourceTitle}</Text>
+                  <Text style={styles.bookmarkPosition}>{mark.resourceTitle} · مخ {mark.page}</Text>
                   {!!mark.note && <Text style={styles.smallMuted}>{mark.note}</Text>}
                   <Text style={styles.bookmarkOpenText}>{t("▤ همدا مخ پرانیزه")}</Text>
                 </TouchableOpacity>
-                <TouchableOpacity onPress={() => deletePdfMark(mark.id)}><Text style={styles.deleteIcon}>{t("حذف")}</Text></TouchableOpacity>
+                <View style={{ alignItems: 'center', gap: 8 }}>
+                  <TouchableOpacity onPress={() => openBookmarkEditor('pdf', mark)}><Text style={styles.bookmarkOpenText}>✎ سمون</Text></TouchableOpacity>
+                  <TouchableOpacity onPress={() => deletePdfMark(mark.id)}><Text style={styles.deleteIcon}>{t("حذف")}</Text></TouchableOpacity>
+                </View>
               </View>
             ))}
             {!pdfMarks.length && <Text style={styles.emptyText}>{t("تر اوسه د کتاب کوم مخ نه دی نښه شوی.")}</Text>}
