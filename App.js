@@ -450,6 +450,11 @@ export default function App() {
   const [selectedFolder, setSelectedFolder] = useState('');
   const [selectedFolderParent, setSelectedFolderParent] = useState('');
   const [selectedItem, setSelectedItem] = useState(null);
+  const [editingGlobalItemId, setEditingGlobalItemId] = useState('');
+  const [generalMaterialsScope, setGeneralMaterialsScope] = useState('');
+  const [formFolderParentChoice, setFormFolderParentChoice] = useState('');
+  const [settingsSearch, setSettingsSearch] = useState('');
+  const [showColorSettings, setShowColorSettings] = useState(false);
   const [selectedAcademicSurah, setSelectedAcademicSurah] = useState(null);
   const [selectedAcademicAyah, setSelectedAcademicAyah] = useState('');
   const [selectedAcademicType, setSelectedAcademicType] = useState('');
@@ -945,6 +950,7 @@ export default function App() {
     setFormAyah('');
     setFormPageMap('');
     setFormAudioMap('');
+    setFormFolderParentChoice('');
     setQuranTargetAyah('');
     setQuranTargetSurah('');
     setQuranMode(false);
@@ -1317,10 +1323,16 @@ export default function App() {
       Alert.alert('خبرتیا', 'د درس نوم ولیکئ.');
       return;
     }
+    if (!quranMode && formFolderParentChoice && !selectedFolder) {
+      Alert.alert('فولډر وټاکئ', 'د ټاکلي اصلي فولډر له لېست څخه یو فرعي فولډر هم وټاکئ.');
+      return;
+    }
 
     if (screen === 'arabicBookEditor') {
+      const existingBook = editingGlobalItemId ? globalItems.find(item => item.id === editingGlobalItemId) : null;
       const book = {
-        id: `arabic-book-${Date.now()}`,
+        ...(existingBook || {}),
+        id: existingBook?.id || `arabic-book-${Date.now()}`, 
         title: formTitle.trim(),
         description: formDescription,
         scholar: formScholar.trim(),
@@ -1332,17 +1344,22 @@ export default function App() {
         attachments: formAttachments,
         section: selectedSection,
         folder: selectedFolder,
+        folderParent: formFolderParentChoice || '',
         resourceType: 'arabicAcademicBook',
-        createdAt: new Date().toISOString()
+        createdAt: existingBook?.createdAt || new Date().toISOString()
       };
-      await saveGlobalItems([book, ...globalItems]);
+      const updatedBooks = existingBook ? globalItems.map(item => item.id === existingBook.id ? book : item) : [book, ...globalItems];
+      await saveGlobalItems(updatedBooks);
+      setEditingGlobalItemId('');
       clearForm();
       setScreen('sectionFolder');
       return;
     }
 
+    const existingItem = editingGlobalItemId ? globalItems.find(item => item.id === editingGlobalItemId) : null;
     const newItem = {
-      id: Date.now().toString(),
+      ...(existingItem || {}),
+      id: existingItem?.id || Date.now().toString(),
       title: formTitle.trim(),
       description: formDescription,
       text: formText,
@@ -1359,6 +1376,10 @@ export default function App() {
       permission: formPermission.trim(),
       section: quranMode ? 'قرآن کریم او علوم القرآن' : selectedSection,
       folder: quranMode ? 'قرآن کریم' : selectedFolder,
+      folderParent: quranMode ? '' : (formFolderParentChoice || ''),
+      isGeneralMaterial: !!generalMaterialsScope || !!existingItem?.isGeneralMaterial,
+      generalScope: generalMaterialsScope || existingItem?.generalScope || '',
+      generalParentFolder: generalMaterialsScope === 'subfolder' ? (formFolderParentChoice || selectedFolderParent || '') : '',
       level: canonicalLearningLevel(formLevel),
       surah: quranMode ? formSurah.trim() : '',
       ayah: quranMode ? formAyah.trim() : '',
@@ -1371,21 +1392,29 @@ export default function App() {
       academicSurahName: selectedAcademicType && selectedAcademicSurah ? selectedAcademicSurah.name : '',
       academicAyahNumber: selectedAcademicType ? selectedAcademicAyah : '',
       bookId: selectedAcademicBook?.id || '',
-      createdAt: new Date().toISOString()
+      createdAt: existingItem?.createdAt || new Date().toISOString()
     };
 
-    await saveGlobalItems([
-      newItem,
-      ...globalItems
-    ]);
+    const updatedGlobalItems = existingItem
+      ? globalItems.map(item => item.id === existingItem.id ? newItem : item)
+      : [newItem, ...globalItems];
+    await saveGlobalItems(updatedGlobalItems);
+    if (existingItem) {
+      setSelectedItem(newItem);
+      if (favorites.some(favorite => favorite.id === existingItem.id)) {
+        await saveFavorites(favorites.map(favorite => favorite.id === existingItem.id ? { ...favorite, ...newItem } : favorite));
+      }
+    }
     if (newItem.scholar && !scholarNames.includes(newItem.scholar)) {
       const updatedScholarNames = [...scholarNames, newItem.scholar];
       setScholarNames(updatedScholarNames);
       await saveData(STORAGE.scholarNames, updatedScholarNames);
     }
 
+    setEditingGlobalItemId('');
     clearForm();
-    if (selectedAcademicBook) { setScreen('arabicBookDetails'); }
+    if (generalMaterialsScope || existingItem?.isGeneralMaterial) { setScreen('generalMaterials'); }
+    else if (selectedAcademicBook) { setScreen('arabicBookDetails'); }
     else if (selectedAcademicType) { setScreen(selectedAcademicAyah ? 'quranAcademicAyahDetails' : 'quranAcademicAyahs'); }
     else { setScreen(savedAsQuran ? 'quran' : 'sectionFolder'); }
   }
@@ -2905,6 +2934,73 @@ export default function App() {
     setScreen('itemDetails');
   }
 
+  function openEditGlobalItem(item) {
+    if (!item?.id) return;
+    setEditingGlobalItemId(item.id);
+    setSelectedItem(item);
+    setFormTitle(item.title || '');
+    setFormDescription(item.description || '');
+    setFormText(item.text || '');
+    const tracks = Array.isArray(item.audioTracks) && item.audioTracks.length
+      ? item.audioTracks
+      : (item.audio ? [{ id: `legacy-audio-${item.id}`, name: 'آډیو', uri: item.audio, mimeType: 'audio/*' }] : []);
+    setFormAudioTracks(tracks);
+    setFormAudio(tracks[0]?.uri || item.audio || '');
+    setFormAttachments(Array.isArray(item.attachments) ? item.attachments : []);
+    setFormPDF(item.pdf || '');
+    setFormVideo(item.video || '');
+    setFormLanguage(item.language || 'پښتو');
+    setFormMadhhab(item.madhhab || '');
+    setFormResourceType(item.resourceCategory || item.resourceType || 'درس');
+    setFormSource(item.source || '');
+    setFormPermission(item.permission || '');
+    setFormScholar(item.scholar || '');
+    setFormLevel(item.level || 'تمهیدي او ابتدایي');
+    setFormSurah(item.surah || '');
+    setFormAyah(item.ayah || '');
+    setFormPageMap((item.pageMap || []).map(row => `${row.surah ? `${row.surah}:` : ''}${row.fromAyah}-${row.toAyah}=${row.page}`).join('; '));
+    setFormAudioMap((item.audioMap || []).map(row => `${row.surah}:${row.ayah}=${Math.floor(row.startSeconds / 60)}:${String(row.startSeconds % 60).padStart(2, '0')}`).join('; '));
+    setSelectedSection(item.section || selectedSection);
+    setSelectedFolder(item.folder || selectedFolder);
+    setSelectedAcademicType(item.academicType || '');
+    const editSurah = QURAN_SURAHS.find(row => row.number === Number(item.academicSurahNumber));
+    setSelectedAcademicSurah(editSurah || null);
+    setSelectedAcademicAyah(item.academicAyahNumber || '');
+    setSelectedAcademicBook(item.bookId ? globalItems.find(row => row.id === item.bookId) || null : null);
+    const inferredParent = item.folderParent || (item.folder === selectedFolder ? selectedFolderParent : '');
+    setFormFolderParentChoice(inferredParent);
+    setSelectedFolderParent(inferredParent);
+    setGeneralMaterialsScope(item.generalScope || '');
+    setQuranMode(item.resourceType === 'quran');
+    setScreen(item.resourceType === 'arabicAcademicBook' ? 'arabicBookEditor' : 'lessonEditor');
+  }
+
+  function openGeneralMaterials() {
+    setGeneralMaterialsScope(selectedFolderParent ? 'subfolder' : 'main');
+    setScreen('generalMaterials');
+  }
+
+  function openAddGeneralMaterial() {
+    clearForm();
+    setSelectedAcademicBook(null);
+    setSelectedAcademicType('');
+    setEditingGlobalItemId('');
+    setGeneralMaterialsScope(selectedFolderParent ? 'subfolder' : 'main');
+    setFormFolderParentChoice(selectedFolderParent || '');
+    setScreen('lessonEditor');
+  }
+
+  function getGeneralMaterialItems() {
+    const local = globalItems.filter(item => item.isGeneralMaterial === true && item.section === selectedSection && (
+      generalMaterialsScope === 'subfolder'
+        ? item.generalScope === 'subfolder' && item.folder === selectedFolder && (item.generalParentFolder || item.folderParent || selectedFolderParent) === selectedFolderParent
+        : item.generalScope === 'main' && item.folder === selectedFolder
+    ));
+    if (generalMaterialsScope !== 'subfolder' || !selectedFolderParent) return local;
+    const inherited = globalItems.filter(item => item.isGeneralMaterial === true && item.generalScope === 'main' && item.section === selectedSection && item.folder === selectedFolderParent);
+    return [...inherited.map(item => ({ ...item, _inheritedGeneral: true })), ...local];
+  }
+
   // ==================================================
   // 31 - د علمي برخو پرانیستل
   // ==================================================
@@ -3192,6 +3288,9 @@ export default function App() {
 
   function openAddLesson() {
     clearForm();
+    setEditingGlobalItemId('');
+    setGeneralMaterialsScope('');
+    setFormFolderParentChoice(selectedFolderParent || '');
     setSelectedAcademicBook(null);
     setSelectedAcademicType('');
     setScreen('lessonEditor');
@@ -3227,12 +3326,17 @@ export default function App() {
 
   function openAddQuranAcademicLesson() {
     clearForm();
+    setEditingGlobalItemId('');
+    setGeneralMaterialsScope('');
     setSelectedAcademicBook(null);
     setScreen('lessonEditor');
   }
 
   function openAddArabicBook() {
     clearForm();
+    setEditingGlobalItemId('');
+    setGeneralMaterialsScope('');
+    setFormFolderParentChoice(selectedFolderParent || '');
     setSelectedAcademicBook(null);
     setScreen('arabicBookEditor');
   }
@@ -3244,6 +3348,9 @@ export default function App() {
 
   function openAddArabicBookLesson() {
     clearForm();
+    setEditingGlobalItemId('');
+    setGeneralMaterialsScope('');
+    setFormFolderParentChoice(selectedFolderParent || '');
     setScreen('lessonEditor');
   }
 
@@ -3259,14 +3366,15 @@ export default function App() {
       'ژباړه او ترجمه': ['ژباړه', 'ترجمه']
     }[selectedFolder] || []) : [];
     return globalItems.filter(item =>
+      !item.isGeneralMaterial &&
       (item.section === selectedSection || aliases.includes(item.section)) &&
-      (acceptedFolderNames.includes(item.folder) ||
+      (acceptedFolderNames.includes(item.folder) && (!item.folderParent || item.folderParent === selectedFolderParent) ||
         (item.resourceType === 'quran' && quranResourceTypes.includes(item.resourceCategory)))
     );
   }
 
   function openQuranEditor(surah = quranSelectedSurah) {
-    clearForm(); setSelectedScholar(''); setQuranMode(true); setFormResourceType('تفسیر');
+    clearForm(); setEditingGlobalItemId(''); setGeneralMaterialsScope(''); setSelectedScholar(''); setQuranMode(true); setFormResourceType('تفسیر');
     setSelectedSection('قرآن کریم او علوم القرآن'); setSelectedFolder('قرآن کریم');
     if (surah) setFormSurah(String(surah.number));
     setScreen('quranEditor');
@@ -4129,20 +4237,21 @@ export default function App() {
 
         {screen === 'arabicBookEditor' && (
           <ScrollView contentContainerStyle={styles.pageContent} keyboardShouldPersistTaps="always">
-            <PageHeader title="نوی عربي کتاب جوړول" subtitle={`${selectedSection} · ${selectedFolder}`} onBack={goBack} />
+            <PageHeader title={editingGlobalItemId ? 'عربي کتاب اصلاح کړئ' : 'نوی عربي کتاب جوړول'} subtitle={`${selectedSection} · ${selectedFolder}`} onBack={goBack} />
             <Field textColor={settings.textColor} label="د کتاب نوم" value={formTitle} onChangeText={setFormTitle} placeholder="د کتاب نوم ولیکئ" />
             <Field textColor={settings.textColor} label="د کتاب لنډه پېژندنه" value={formDescription} onChangeText={setFormDescription} multiline placeholder="د کتاب په اړه معلومات" />
             <Field textColor={settings.textColor} label="لیکوال" value={formScholar} onChangeText={setFormScholar} placeholder="د لیکوال نوم" />
             <Field textColor={settings.textColor} label="سرچینه او حواله" value={formSource} onChangeText={setFormSource} placeholder="ناشر، چاپ، حواله" />
             <Field textColor={settings.textColor} label="د نشر اجازه" value={formPermission} onChangeText={setFormPermission} placeholder="د اجازې معلومات" />
             <View style={styles.formCard}><Text style={[styles.cardHeading, { color: settings.headingColor }]}>د کتاب فایلونه (اختیاري)</Text><GoldButton title="▤ د کتاب PDF وټاکئ" secondary onPress={pickPDF} />{formPDF ? <Text style={styles.fileSelected}>PDF انتخاب شو ✓</Text> : null}<GoldButton title="♫ د کتاب آډیو وټاکئ" secondary onPress={pickAudio} />{formAudio ? <Text style={styles.fileSelected}>آډیو انتخاب شو ✓</Text> : null}</View>
-            <GoldButton title="کتاب خوندي کړئ" onPress={addGlobalItem} />
+            <GoldButton title={editingGlobalItemId ? 'د کتاب اصلاحات خوندي کړئ' : 'کتاب خوندي کړئ'} onPress={addGlobalItem} />
           </ScrollView>
         )}
 
         {screen === 'arabicBookDetails' && selectedAcademicBook && (
           <ScrollView contentContainerStyle={styles.pageContent} keyboardShouldPersistTaps="always">
             <PageHeader title={selectedAcademicBook.title} subtitle={selectedAcademicBook.scholar || selectedFolder} onBack={goBack} />
+            <GoldButton title="✎ د کتاب معلومات اصلاح کړئ" secondary onPress={() => openEditGlobalItem(selectedAcademicBook)} />
             {!!selectedAcademicBook.description && <Text style={styles.smallMuted}>{selectedAcademicBook.description}</Text>}
             {!!selectedAcademicBook.pdf && <GoldButton title="▤ د کتاب PDF ولولئ" secondary onPress={() => openPdf(selectedAcademicBook, 1)} />}
             <GoldButton title="＋ د دې کتاب نوی درس اضافه کړئ" onPress={openAddArabicBookLesson} />
@@ -4158,6 +4267,8 @@ export default function App() {
               subtitle={selectedFolderParent ? `${selectedSection} · ${selectedFolderParent}` : selectedSection}
               onBack={goBack}
             />
+
+            <GoldButton title={selectedFolderParent ? '▣ د دې فرعي فولډر عمومي مواد' : '▣ د دې اصلي فولډر عمومي مواد'} secondary onPress={openGeneralMaterials} />
 
             {(selectedFolder === 'کتب تسعه' || selectedFolder === 'صحاح سته' || selectedFolder === 'مشکاة المصابيح') ? <GoldButton title={selectedFolder === 'مشکاة المصابيح' ? '📚 مشکاة المصابيح پرانیزئ' : '📚 د کتب تسعه کتابونه پرانیزئ'} secondary onPress={() => { setSittaCollection(selectedFolder === 'مشکاة المصابيح' ? 'mishkat' : 'kutubTisah'); setScreen('sittaBooks'); }} /> : null}
 
@@ -4216,10 +4327,29 @@ export default function App() {
             42 - نوی درس
         ================================================== */}
 
+        {screen === 'generalMaterials' && (
+          <ScrollView contentContainerStyle={styles.pageContent} keyboardShouldPersistTaps="always">
+            <PageHeader title="عمومي مواد" subtitle={generalMaterialsScope === 'subfolder' ? `${selectedFolderParent} · ${selectedFolder}` : `${selectedSection} · ${selectedFolder}`} onBack={goBack} />
+            <Text style={styles.smallMuted}>{generalMaterialsScope === 'subfolder' ? 'د دې فرعي فولډر خپل مواد او د اصلي فولډر شریک شوي عمومي مواد دلته ښکاري. شریک شوي مواد نقل نه کېږي؛ اصلي نسخه یې کارول کېږي.' : 'هغه کتابونه، درسونه، PDF او آډیو دلته وساتئ چې د دې اصلي فولډر له ټولو فرعي برخو سره تړاو لري.'}</Text>
+            <GoldButton title="＋ نوی عمومي مواد اضافه کړئ" onPress={openAddGeneralMaterial} />
+            {getGeneralMaterialItems().map(item => (
+              <View key={`${item.id}-${item._inheritedGeneral ? 'shared' : 'local'}`} style={styles.lessonCard}>
+                <TouchableOpacity style={styles.flexText} onPress={() => openItem(item)}>
+                  <Text style={styles.lessonTitle}>{item.title}</Text>
+                  <Text style={styles.smallMuted}>{item.scholar || 'عالم/لیکوال نه دی ټاکل شوی'} · {item.resourceCategory || item.resourceType || 'مواد'}{item._inheritedGeneral ? ' · د اصلي فولډر شریک شوی' : ' · د همدې فولډر مواد'}</Text>
+                  <Text style={styles.smallMuted}>{item.pdf ? 'PDF · ' : ''}{item.audio || item.audioTracks?.length ? 'آډیو · ' : ''}{item.video ? 'ویډیو' : ''}</Text>
+                </TouchableOpacity>
+                <TouchableOpacity onPress={() => openEditGlobalItem(item)} style={{ padding: 8 }}><Ionicons name="create-outline" size={21} color={COLORS.gold} /></TouchableOpacity>
+              </View>
+            ))}
+            {getGeneralMaterialItems().length === 0 && <Text style={styles.emptyText}>تر اوسه عمومي مواد نه دي ثبت شوي.</Text>}
+          </ScrollView>
+        )}
+
         {screen === 'lessonEditor' && (
           <ScrollView contentContainerStyle={styles.pageContent} keyboardShouldPersistTaps="always" keyboardDismissMode="none">
             <PageHeader
-              title={t("نوی درس")}
+              title={editingGlobalItemId ? 'مواد اصلاح کړئ' : (generalMaterialsScope ? 'نوی عمومي مواد' : t("نوی درس"))}
               subtitle={selectedAcademicBook ? `کتاب: ${selectedAcademicBook.title}` : (selectedAcademicType && selectedAcademicSurah ? `${selectedAcademicType} · سورة ${selectedAcademicSurah.name} · آیت ${selectedAcademicAyah}` : t("د درس معلومات ثبت کړئ"))}
               onBack={goBack}
             />
@@ -4247,7 +4377,30 @@ export default function App() {
               multiline
             />
 
-            <Field textColor={settings.textColor} label="د عالم / لیکوال نوم (اختیاري)" value={formScholar} onChangeText={setFormScholar} placeholder="د عالم یا لیکوال نوم ولیکئ" />
+            <View style={styles.formCard}>
+              <Text style={[styles.cardHeading, { color: settings.headingColor }]}>عالم / لیکوال له لېسته وټاکئ</Text>
+              <View style={{ flexDirection: 'row-reverse', flexWrap: 'wrap', gap: 7 }}>
+                {scholarNames.map(name => <TouchableOpacity key={name} onPress={() => setFormScholar(name)} style={{ paddingVertical: 7, paddingHorizontal: 10, borderRadius: 9, borderWidth: 1, borderColor: formScholar === name ? COLORS.gold : COLORS.border, backgroundColor: formScholar === name ? COLORS.card2 : COLORS.card }}><Text style={{ color: COLORS.white }}>{name}</Text></TouchableOpacity>)}
+              </View>
+              <Field textColor={settings.textColor} label="نوی عالم / لیکوال (که په لېست کې نه وي)" value={formScholar} onChangeText={setFormScholar} placeholder="نوم ولیکئ یا له پورته لېست څخه یې وټاکئ" />
+              <Text style={[styles.cardHeading, { color: settings.headingColor, marginTop: 8 }]}>علمي برخه وټاکئ</Text>
+              <View style={{ flexDirection: 'row-reverse', flexWrap: 'wrap', gap: 7 }}>
+                {SECTIONS.map(section => <TouchableOpacity key={section} onPress={() => { setSelectedSection(section); const first = getSectionFolders(section)[0]?.name || ''; setSelectedFolder(first); setSelectedFolderParent(''); setFormFolderParentChoice(''); if (generalMaterialsScope) setGeneralMaterialsScope('main'); }} style={{ paddingVertical: 7, paddingHorizontal: 10, borderRadius: 9, borderWidth: 1, borderColor: selectedSection === section ? COLORS.gold : COLORS.border, backgroundColor: selectedSection === section ? COLORS.card2 : COLORS.card }}><Text style={{ color: COLORS.white }}>{section}</Text></TouchableOpacity>)}
+              </View>
+              <Text style={[styles.cardHeading, { color: settings.headingColor, marginTop: 8 }]}>اصلي فولډر وټاکئ</Text>
+              <View style={{ flexDirection: 'row-reverse', flexWrap: 'wrap', gap: 7 }}>
+                {getSectionFolders(selectedSection).map(folder => <TouchableOpacity key={folder.name} onPress={() => { setSelectedFolder(folder.name); setSelectedFolderParent(''); setFormFolderParentChoice(''); if (generalMaterialsScope) setGeneralMaterialsScope('main'); }} style={{ paddingVertical: 7, paddingHorizontal: 10, borderRadius: 9, borderWidth: 1, borderColor: selectedFolder === folder.name && !formFolderParentChoice ? COLORS.gold : COLORS.border, backgroundColor: selectedFolder === folder.name && !formFolderParentChoice ? COLORS.card2 : COLORS.card }}><Text style={{ color: COLORS.white }}>{folder.name}</Text></TouchableOpacity>)}
+              </View>
+              {getSectionFolders(selectedSection).some(folder => (folder.children || []).length > 0) && <>
+                <Text style={[styles.cardHeading, { color: settings.headingColor, marginTop: 8 }]}>فرعي فولډر ته د موادو ټاکل</Text>
+                <View style={{ flexDirection: 'row-reverse', flexWrap: 'wrap', gap: 7 }}>
+                  {getSectionFolders(selectedSection).filter(folder => (folder.children || []).length > 0).map(folder => <TouchableOpacity key={folder.name} onPress={() => { setFormFolderParentChoice(folder.name); setSelectedFolderParent(folder.name); setSelectedFolder(''); if (generalMaterialsScope) setGeneralMaterialsScope('subfolder'); }} style={{ paddingVertical: 7, paddingHorizontal: 10, borderRadius: 9, borderWidth: 1, borderColor: formFolderParentChoice === folder.name ? COLORS.gold : COLORS.border, backgroundColor: formFolderParentChoice === folder.name ? COLORS.card2 : COLORS.card }}><Text style={{ color: COLORS.white }}>{folder.name} – فرعي</Text></TouchableOpacity>)}
+                </View>
+                {!!formFolderParentChoice && <View style={{ flexDirection: 'row-reverse', flexWrap: 'wrap', gap: 7, marginTop: 7 }}>
+                  {(getSectionFolders(selectedSection).find(folder => folder.name === formFolderParentChoice)?.children || []).map(child => <TouchableOpacity key={child} onPress={() => setSelectedFolder(child)} style={{ paddingVertical: 7, paddingHorizontal: 10, borderRadius: 9, borderWidth: 1, borderColor: selectedFolder === child ? COLORS.gold : COLORS.border, backgroundColor: selectedFolder === child ? COLORS.card2 : COLORS.card }}><Text style={{ color: COLORS.white }}>{child}</Text></TouchableOpacity>)}
+                </View>}
+              </>}
+            </View>
             <Field textColor={settings.textColor} label="سرچینه او حواله (اختیاري)" value={formSource} onChangeText={setFormSource} placeholder="کتاب، ناشر، ویبپاڼه یا حواله" />
             <Field textColor={settings.textColor} label="د نشر / کارولو اجازه (اختیاري)" value={formPermission} onChangeText={setFormPermission} placeholder="اجازه، عامه ملکیت یا د جواز معلومات" />
             <Field textColor={settings.textColor} label="ژبه" value={formLanguage} onChangeText={setFormLanguage} placeholder="پښتو، عربي، اردو..." />
@@ -4320,7 +4473,7 @@ export default function App() {
             </View>
 
             <GoldButton
-              title={t("درس خوندي کړئ")}
+              title={editingGlobalItemId ? 'اصلاحات خوندي کړئ' : (generalMaterialsScope ? 'عمومي مواد خوندي کړئ' : t("درس خوندي کړئ"))}
               onPress={addGlobalItem}
             />
           </ScrollView>
@@ -4419,6 +4572,8 @@ export default function App() {
                 ))}
               </View>
             ) : null}
+
+            {selectedItem?.id && globalItems.some(row => row.id === selectedItem.id) && <GoldButton title="✎ دا مواد اصلاح / نوي کړئ" secondary onPress={() => openEditGlobalItem(selectedItem)} />}
 
             <GoldButton
               title={
@@ -5188,7 +5343,9 @@ export default function App() {
               subtitle={t("د میراث اسلام شخصي تنظیمات")}
               onBack={goBack}
             />
+            <TextInput value={settingsSearch} onChangeText={setSettingsSearch} placeholder="تنظیمات ولټوئ: ژبه، رنګ، خبرتیاوې..." placeholderTextColor={COLORS.muted} style={styles.designColorInput} textAlign="right" />
 
+            {(!settingsSearch || 'ژبه language'.includes(settingsSearch.trim().toLowerCase())) && <>
             <Text style={[styles.cardHeading, { color: settings.headingColor }]}>
               {t("د اپلیکیشن ژبه")}</Text>
 
@@ -5208,6 +5365,9 @@ export default function App() {
               </TouchableOpacity>
             ))}
 
+            </>}
+            {(!settingsSearch || ['رنګ','رنګونه','متن','سرلیک','ډیزاین','color','colors','design','text'].some(word => settingsSearch.trim().toLowerCase().includes(word) || word.includes(settingsSearch.trim().toLowerCase()))) && <TouchableOpacity style={styles.optionRow} onPress={() => setShowColorSettings(value => !value)}><Text style={[styles.optionText, { color: settings.textColor }]}>🎨 د رنګونو او بڼې تنظیمات {showColorSettings ? '−' : '+'}</Text><Ionicons name={showColorSettings ? 'chevron-up' : 'chevron-down'} size={18} color={COLORS.gold} /></TouchableOpacity>}
+            {showColorSettings && (!settingsSearch || ['رنګ','رنګونه','متن','سرلیک','ډیزاین','color','colors','design','text'].some(word => settingsSearch.trim().toLowerCase().includes(word) || word.includes(settingsSearch.trim().toLowerCase()))) && <>
             <View style={styles.formCard}>
               <Text style={[styles.cardHeading, { color: settings.headingColor }]}>
                 {t("د متن رنګ")}</Text>
@@ -5262,14 +5422,15 @@ export default function App() {
               <Text style={[styles.cardHeading, { color: settings.headingColor }]}>د سرلیک نمونه – میراث اسلام</Text>
             </View>
 
-            <View style={styles.formCard}>
+            </>}
+            {(!settingsSearch || ['ډیزاین','کورپاڼه','design','home'].some(word => settingsSearch.trim().toLowerCase().includes(word) || word.includes(settingsSearch.trim().toLowerCase()))) && <View style={styles.formCard}>
               <Text style={[styles.cardHeading, { color: settings.headingColor }]}>
                 {t("د کورپاڼې ډیزاین او شخصي اختیارونه")}</Text>
               <Text style={styles.mutedText}>{t("د فولډرونو اندازه، رنګونه، لیکدود، چوکاټ او د کورپاڼې عمومي بڼه پخپله تنظیم کړئ.")}</Text>
               <GoldButton title={t("د کورپاڼې ډیزاین تنظیمول")} onPress={() => setScreen('homeDesign')} />
-            </View>
+            </View>}
 
-            <View style={styles.formCard}>
+            {(!settingsSearch || ['خبرتیا','notifications','notification'].some(word => settingsSearch.trim().toLowerCase().includes(word) || word.includes(settingsSearch.trim().toLowerCase()))) && <View style={styles.formCard}>
               <Text style={[styles.cardHeading, { color: settings.headingColor }]}>
                 {t("خبرتیاوې")}</Text>
 
@@ -5291,12 +5452,12 @@ export default function App() {
                   thumbColor={COLORS.gold}
                 />
               </View>
-            </View>
+            </View>}
 
-            <GoldButton
+            {(!settingsSearch || ['لمونځ','prayer','وخت'].some(word => settingsSearch.trim().toLowerCase().includes(word) || word.includes(settingsSearch.trim().toLowerCase()))) && <GoldButton
               title={t("د لمانځه تنظیمات")}
               onPress={() => setScreen('prayer')}
-            />
+            />}
 
             <GoldButton
               title="کورپاڼې ته ستنېدل"
