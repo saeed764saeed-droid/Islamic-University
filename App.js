@@ -1566,7 +1566,12 @@ export default function App() {
       if (picked.canceled || !picked.assets?.[0]) return;
       const asset = picked.assets[0];
       const uri = await keepPickedFile(asset, `shared-${resource.kind}`);
-      const updated = sharedResources.map(row => row.id === resource.id ? { ...row, uri, originalName: asset.name || row.originalName, size: Number(asset.size || 0), durationSeconds: resource.kind === 'audio' ? (Number(asset.duration) || await readAudioDurationSeconds(uri)) : null, replacedAt: new Date().toISOString() } : row);
+      const durationSeconds = resource.kind === 'audio'
+        ? (Number(asset.duration) || await readAudioDurationSeconds(uri))
+        : null;
+      const updated = sharedResources.map(row => row.id === resource.id
+        ? { ...row, uri, originalName: asset.name || row.originalName, size: Number(asset.size || 0), durationSeconds, replacedAt: new Date().toISOString() }
+        : row);
       await saveSharedResources(updated);
       Alert.alert('بریالی شو', 'د سرچینې فایل بدل شو؛ نوم او تړاوونه یې خوندي پاتې شول.');
     } catch (e) { Alert.alert('ستونزه', 'فایل بدل نه شو.'); }
