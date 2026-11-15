@@ -601,6 +601,24 @@ export default function App() {
   const [searchEditingKey, setSearchEditingKey] = useState('');
   const [searchEditValue, setSearchEditValue] = useState('');
   const [noteSearch, setNoteSearch] = useState('');
+  const [resumeEntry, setResumeEntry] = useState(null);
+
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      try {
+        const [audioRaw, pdfRaw] = await Promise.all([AsyncStorage.getItem(STORAGE.audioProgress), AsyncStorage.getItem(STORAGE.pdfProgress)]);
+        const audioMap = audioRaw ? JSON.parse(audioRaw) : {};
+        const pdfMap = pdfRaw ? JSON.parse(pdfRaw) : {};
+        const audio = audioMap?._last || (audioMap?.resourceId ? audioMap : null);
+        const pdf = pdfMap?._last || (pdfMap?.resourceId ? pdfMap : null);
+        const latest = [audio && { ...audio, type: 'audio' }, pdf && { ...pdf, type: 'pdf' }]
+          .filter(Boolean).sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')))[0];
+        if (mounted && latest) setResumeEntry(latest);
+      } catch (error) {}
+    })();
+    return () => { mounted = false; };
+  }, []);
 
   // ------------------------------------------------
   // 10.6 - د کتابونو د څپرکو او درسونو فورمونه
@@ -1654,8 +1672,9 @@ export default function App() {
   async function persistAudioProgress(item, positionMillis) {
     if (!item?.id) return;
     try {
+      const resourceId = String(item.id).split('::')[0];
       const progress = {
-        resourceId: item.id, title: item.title || '', uri: item.audio,
+        resourceId, title: item.title || '', uri: item.audio,
         positionMillis: Math.max(0, Math.floor(positionMillis || 0)),
         updatedAt: new Date().toISOString()
       };
@@ -1664,9 +1683,10 @@ export default function App() {
       // د زړې نسخې یو واحد progress record په map بدلوي.
       if (!saved || Array.isArray(saved) || typeof saved !== 'object') saved = {};
       if (saved.resourceId) { const legacy = saved; saved = { [legacy.resourceId]: legacy }; }
-      saved[item.id] = progress;
+      saved[resourceId] = progress;
       saved._last = progress;
       await AsyncStorage.setItem(STORAGE.audioProgress, JSON.stringify(saved));
+      setResumeEntry({ ...progress, type: 'audio' });
     } catch (error) {}
   }
 
@@ -1688,7 +1708,8 @@ export default function App() {
         const saved = await AsyncStorage.getItem(STORAGE.audioProgress);
         if (saved) {
           const stored = JSON.parse(saved);
-          const progress = stored?.[item.id] || (stored?.resourceId === item.id ? stored : null);
+          const progressKey = String(item.id).split('::')[0];
+          const progress = stored?.[progressKey] || (stored?.resourceId === progressKey ? stored : null);
           if (progress && (!progress.uri || progress.uri === item.audio)) startAt = progress.positionMillis || 0;
         }
       }
@@ -1742,8 +1763,10 @@ export default function App() {
     try {
       const player = audioSoundRef.current;
       if (!player) return;
-      if (audioStatus.isPlaying) player.pause();
-      else player.play();
+      if (audioStatus.isPlaying) {
+        player.pause();
+        if (audioItemRef.current) persistAudioProgress(audioItemRef.current, audioStatus.positionMillis);
+      } else player.play();
     } catch (error) {
       Alert.alert('ستونزه', 'د غږ حالت بدل نه شو.');
     }
@@ -1832,6 +1855,31 @@ export default function App() {
     ]);
   }
 
+  async function persistPdfProgress(item, page) {
+    if (!item?.id) return;
+    try {
+      const progress = { resourceId: item.id, title: item.title || 'کتاب', uri: item.pdf, page: Math.max(1, Number(page) || 1), updatedAt: new Date().toISOString() };
+      const raw = await AsyncStorage.getItem(STORAGE.pdfProgress);
+      let saved = raw ? JSON.parse(raw) : {};
+      if (!saved || Array.isArray(saved) || typeof saved !== 'object') saved = {};
+      if (saved.resourceId) { const legacy = saved; saved = { [legacy.resourceId]: legacy }; }
+      saved[item.id] = progress;
+      saved._last = progress;
+      await AsyncStorage.setItem(STORAGE.pdfProgress, JSON.stringify(saved));
+      setResumeEntry({ ...progress, type: 'pdf' });
+    } catch (error) {}
+  }
+
+  async function resumeLastLearning() {
+    if (!resumeEntry?.resourceId) return;
+    const item = globalItems.find(row => row.id === resumeEntry.resourceId);
+    if (!item) { Alert.alert('درس ونه موندل شو', 'دا پخوانی درس یا فایل نور په کتابتون کې نه ښکاري.'); return; }
+    if (resumeEntry.type === 'audio') {
+      const track = (item.audioTracks || []).find(row => row.uri === resumeEntry.uri);
+      await startAudio(track ? { ...item, audio: track.uri, title: `${item.title || ''} – ${track.name || 'آډیو'}` } : item);
+    } else await openPdf(item);
+  }
+
   async function openPdf(item, page = null) {
     if (!item?.pdf) {
       Alert.alert('PDF نشته', 'د دې درس لپاره PDF فایل نه دی ثبت شوی.');
@@ -1842,8 +1890,10 @@ export default function App() {
       try {
         const saved = await AsyncStorage.getItem(STORAGE.pdfProgress);
         if (saved) {
-          const progress = JSON.parse(saved);
-          if (progress.resourceId === item.id) targetPage = progress.page;
+          const progressMap = JSON.parse(saved);
+          const progress = progressMap?.[item.id] || (progressMap?.resourceId === item.id ? progressMap : null);
+          if (progress?.uri && item.pdf && progress.uri !== item.pdf) { /* د بدل شوي فایل پخوانی مخ مه کاروه */ }
+          else if (progress?.page) targetPage = progress.page;
         }
       } catch (error) {}
     }
@@ -3130,8 +3180,8 @@ export default function App() {
     const has = value => String(value || '').toLocaleLowerCase().includes(query);
 
     globalItems.forEach(item => {
-      if (has(`${item.title} ${item.description} ${item.text} ${item.scholar} ${item.section} ${item.folder} ${item.folderParent} ${(item.audioTracks || []).map(file => file.name).join(' ')} ${(item.attachments || []).map(file => file.name).join(' ')} ${item.pdfDisplayName || ''}`)) {
-        matches.push({ ...item, _resultType: 'lesson' });
+      if (has(`${item.displayTitle || ''} ${item.title} ${item.description} ${item.text} ${item.scholar} ${item.section} ${item.folder} ${item.folderParent} ${(item.audioTracks || []).map(file => file.name).join(' ')} ${(item.attachments || []).map(file => file.name).join(' ')} ${item.pdfDisplayName || ''}`)) {
+        matches.push({ ...item, title: item.displayTitle || item.title, _resultType: 'lesson' });
       }
     });
     notes.forEach(item => {
@@ -3208,7 +3258,11 @@ export default function App() {
     const value = searchEditValue.trim();
     if (!value) { Alert.alert('خبرتیا', 'نوی نوم یا شمېره ولیکئ.'); return; }
     if (item._resultType === 'lesson') {
-      await saveGlobalItems(globalItems.map(row => row.id === item.id ? { ...row, title: value } : row));
+      await saveGlobalItems(globalItems.map(row => row.id === item.id ? { ...row, title: value, displayTitle: value } : row));
+    } else if (item._resultType === 'note') {
+      await saveNotes(notes.map(row => row.id === item.id ? { ...row, title: value } : row));
+    } else if (item._resultType === 'dhikr') {
+      await saveAdhkar(adhkar.map(row => row.id === item.id ? { ...row, title: value } : row));
     } else if (item._resultType === 'book') {
       const group = item._bookGroup;
       const updated = (Array.isArray(books[group]) ? books[group] : []).map(book => {
@@ -4199,6 +4253,17 @@ export default function App() {
                   </TouchableOpacity>
                 </View>
               </View>
+
+              {resumeEntry?.resourceId ? (
+                <TouchableOpacity onPress={resumeLastLearning} style={[styles.lessonCard, { marginHorizontal: 16, marginTop: 12, padding: 14, flexDirection: 'row-reverse', alignItems: 'center', gap: 10 }]} activeOpacity={0.85}>
+                  <Ionicons name="play-circle" size={26} color={COLORS.gold} />
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.lessonTitle}>له خپل پخواني درس څخه دوام ورکړئ</Text>
+                    <Text style={styles.smallMuted}>{resumeEntry.title || 'وروستی ثبت شوی درس'} · {resumeEntry.type === 'pdf' ? `مخ ${resumeEntry.page || 1}` : formatDuration(resumeEntry.positionMillis || 0)}</Text>
+                  </View>
+                  <Ionicons name="chevron-back" size={20} color={COLORS.gold} />
+                </TouchableOpacity>
+              ) : null}
 
               {/* اته عمومي علمي فولډرونه؛ پخوانۍ ۱۶ برخې دننه مدغم دي */}
               <View style={styles.homeCategoriesGrid}>
@@ -5470,7 +5535,7 @@ export default function App() {
                   onLoadComplete={(numberOfPages) => setPdfTotalPages(numberOfPages)}
                   onPageChanged={(page) => {
                     setPdfCurrentPage(page);
-                    AsyncStorage.setItem(STORAGE.pdfProgress, JSON.stringify({ resourceId: selectedItem.id, page })).catch(() => {});
+                    persistPdfProgress(selectedItem, page);
                   }}
                   onError={() => Alert.alert('PDF ستونزه', 'کتاب پرانیستل نه شو. د فایل URI او د PDF ماډیول نصب وګورئ.')}
                   style={styles.pdfViewer}
@@ -6597,7 +6662,7 @@ export default function App() {
 
             {getSearchResults().map((item, index) => {
               const editKey = `${item._resultType}-${item.id || item.title}-${index}`;
-              const canInlineEdit = ['book', 'sitta', 'sittaFile'].includes(item._resultType) && !(item._resultType === 'sitta' && item._sittaLevel === 'kitab');
+              const canInlineEdit = ['lesson', 'note', 'dhikr', 'book', 'sitta', 'sittaFile'].includes(item._resultType) && !(item._resultType === 'sitta' && item._sittaLevel === 'kitab');
               return (
                 <View key={editKey} style={[styles.lessonCard, { gap: 8 }]}>
                   <View style={{ flexDirection: 'row', alignItems: 'center' }}>
@@ -6605,7 +6670,6 @@ export default function App() {
                       <Text style={styles.lessonTitle}>{item.title}</Text>
                       <Text style={styles.smallMuted}>{item._resultLabel || item.scholar || item.section || 'درس'}</Text>
                     </TouchableOpacity>
-                    {item._resultType === 'lesson' ? <TouchableOpacity onPress={() => openEditGlobalItem(item)} style={{ padding: 8 }} accessibilityLabel="اصلاح"><Ionicons name="create-outline" size={20} color={COLORS.gold} /></TouchableOpacity> : null}
                     {canInlineEdit ? <TouchableOpacity onPress={() => { setSearchEditingKey(searchEditingKey === editKey ? '' : editKey); setSearchEditValue(item._resultType === 'sitta' && item._sittaLevel === 'hadith' ? String(item._sittaHadithNumber || '') : item.title || ''); }} style={{ padding: 8 }} accessibilityLabel="اصلاح"><Ionicons name="create-outline" size={20} color={COLORS.gold} /></TouchableOpacity> : null}
                     {item._resultType === 'sittaFile' ? <TouchableOpacity onPress={() => openSittaSearchFileManager(item)} style={{ padding: 8 }} accessibilityLabel="د فایل مدیریت"><Ionicons name="folder-open-outline" size={20} color={COLORS.gold} /></TouchableOpacity> : null}
                     {item._resultType !== 'sitta' && item._resultType !== 'sittaFile' && item._resultType !== 'scholar' ? <TouchableOpacity onPress={() => deleteSearchResult(item)} style={{ padding: 8 }} accessibilityLabel="حذف"><Ionicons name="trash-outline" size={20} color={COLORS.red} /></TouchableOpacity> : null}
