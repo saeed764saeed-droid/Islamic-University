@@ -91,7 +91,10 @@ const STORAGE = {
   sitta: 'sihah_sitta_folders_v1',
   adhkarReminders: 'adhkar_reminders_v1',
   scholarNames: 'scholar_names_v1',
-  folderAdmin: 'folder_admin_v1'
+  folderAdmin: 'folder_admin_v1',
+  sharedResources: 'shared_academic_resources_v1',
+  customSittaBooks: 'custom_hadith_books_v1',
+  scholarTaxonomy: 'scholar_taxonomy_v1'
 };
 
 // د علماوو فولډرونه د اډمین له خوا جوړېږي او د اپلوډ شوو درسونو له نومونو سره په اتومات ډول زیاتېږي.
@@ -436,7 +439,22 @@ export default function App() {
   // ------------------------------------------------
 
   const [selectedScholar, setSelectedScholar] = useState('');
+  const [selectedScholarSubFolder, setSelectedScholarSubFolder] = useState('');
   const [scholarNames, setScholarNames] = useState([]);
+  const [scholarTaxonomy, setScholarTaxonomy] = useState({});
+  const [scholarTaxonomySection, setScholarTaxonomySection] = useState(SECTIONS[0]);
+  const [sharedResources, setSharedResources] = useState([]);
+  const [formSharedResourceIds, setFormSharedResourceIds] = useState([]);
+  const [sharedResourceTitle, setSharedResourceTitle] = useState('');
+  const [sharedResourceKind, setSharedResourceKind] = useState('audio');
+  const [sharedResourceSection, setSharedResourceSection] = useState(SECTIONS[0]);
+  const [customSittaBooks, setCustomSittaBooks] = useState([]);
+  const [newSittaBookName, setNewSittaBookName] = useState('');
+  const [newSittaBookAuthor, setNewSittaBookAuthor] = useState('');
+  const [newSittaBookKitabs, setNewSittaBookKitabs] = useState('');
+  const [newSittaKitabName, setNewSittaKitabName] = useState('');
+  const [editingSharedResourceId, setEditingSharedResourceId] = useState('');
+  const [editingSharedResourceTitle, setEditingSharedResourceTitle] = useState('');
   const [newScholarName, setNewScholarName] = useState('');
   const [folderAdmin, setFolderAdmin] = useState({ allahNames: ALLAH_NAMES, quranExtra: {}, sectionOrder: {} });
   const [newAdminFolderName, setNewAdminFolderName] = useState('');
@@ -699,7 +717,10 @@ export default function App() {
         AsyncStorage.getItem(STORAGE.sitta),
         AsyncStorage.getItem(STORAGE.adhkarReminders),
         AsyncStorage.getItem(STORAGE.scholarNames),
-        AsyncStorage.getItem(STORAGE.folderAdmin)
+        AsyncStorage.getItem(STORAGE.folderAdmin),
+        AsyncStorage.getItem(STORAGE.sharedResources),
+        AsyncStorage.getItem(STORAGE.customSittaBooks),
+        AsyncStorage.getItem(STORAGE.scholarTaxonomy)
       ]);
 
       const [
@@ -716,7 +737,10 @@ export default function App() {
         savedSittaData,
         savedAdhkarReminders,
         savedScholarNames,
-        savedFolderAdmin
+        savedFolderAdmin,
+        savedSharedResources,
+        savedCustomSittaBooks,
+        savedScholarTaxonomy
       ] = results;
 
       if (savedSettings) {
@@ -739,6 +763,9 @@ export default function App() {
       if (savedAdhkarReminders) setAdhkarReminders(JSON.parse(savedAdhkarReminders));
       if (savedScholarNames) setScholarNames(JSON.parse(savedScholarNames));
       if (savedFolderAdmin) setFolderAdmin(old => ({ ...old, ...JSON.parse(savedFolderAdmin) }));
+      if (savedSharedResources) setSharedResources(JSON.parse(savedSharedResources));
+      if (savedCustomSittaBooks) setCustomSittaBooks(JSON.parse(savedCustomSittaBooks));
+      if (savedScholarTaxonomy) setScholarTaxonomy(JSON.parse(savedScholarTaxonomy));
 
     } catch (error) {
       Alert.alert('خبرتیا', 'د معلوماتو په لوستلو کې ستونزه رامنځته شوه.');
@@ -1011,6 +1038,7 @@ export default function App() {
     setFormLinkedPdfMaterialId('');
     setFormLinkedAudioStartSeconds('');
     setFormLinkedPdfPage('');
+    setFormSharedResourceIds([]);
     setFormLanguage('پښتو');
     setFormMadhhab('');
     setFormResourceType('درس');
@@ -1306,7 +1334,9 @@ export default function App() {
         });
         return { ...record, [`${kind}Files`]: files, [kind]: files[0]?.uri || '' };
       };
-      if (fileNameEdit.level === 'kitab') {
+      if (fileNameEdit.level === 'book') {
+        bookRows.__bookMedia = updateRecord(bookRows.__bookMedia || {});
+      } else if (fileNameEdit.level === 'kitab') {
         const mediaRows = { ...(bookRows.__kitabMedia || {}) };
         mediaRows[selectedSittaKitab] = updateRecord(mediaRows[selectedSittaKitab] || {});
         bookRows.__kitabMedia = mediaRows;
@@ -1326,7 +1356,7 @@ export default function App() {
       }
       const updatedData = { ...sittaData, [bookId]: bookRows };
       await saveSittaData(updatedData);
-      if (fileNameEdit.level !== 'kitab') {
+      if (fileNameEdit.level !== 'kitab' && fileNameEdit.level !== 'book') {
         const updatedBab = (bookRows[selectedSittaKitab] || []).find(row => row.id === fileNameEdit.targetId);
         if (updatedBab?.id === selectedSittaBab?.id) setSelectedSittaBab(updatedBab);
       }
@@ -1487,6 +1517,102 @@ export default function App() {
     await openPdf(item, page);
   }
 
+  // ګډ علمي کتابتون: اصلي فایل یو ځل ساتل کېږي، درسونه یوازې د سرچینې ID سره تړل کېږي.
+  async function saveSharedResources(rows) {
+    setSharedResources(rows);
+    await saveData(STORAGE.sharedResources, rows);
+  }
+
+  async function addSharedAcademicResource() {
+    try {
+      const kind = sharedResourceKind;
+      const picked = await DocumentPicker.getDocumentAsync({ type: kind === 'audio' ? ['audio/*'] : (kind === 'pdf' ? 'application/pdf' : '*/*'), copyToCacheDirectory: true, multiple: true });
+      if (picked.canceled || !picked.assets?.length) return;
+      const additions = [];
+      for (const asset of picked.assets) {
+        const uri = await keepPickedFile(asset, `shared-${kind}`);
+        const guessed = String(asset.name || '');
+        const title = (sharedResourceTitle.trim() && picked.assets.length === 1) ? sharedResourceTitle.trim() : guessed.replace(/\.[^.]+$/, '') || 'بې نومه سرچینه';
+        additions.push({ id: `shared-${Date.now()}-${Math.random().toString(36).slice(2,8)}`, title, uri, kind, originalName: guessed, size: Number(asset.size || 0), durationSeconds: kind === 'audio' ? (Number(asset.duration) || await readAudioDurationSeconds(uri)) : null, section: sharedResourceSection, createdAt: new Date().toISOString() });
+      }
+      await saveSharedResources([...additions, ...sharedResources]);
+      setSharedResourceTitle('');
+      Alert.alert('بریالی شو', 'فایلونه په ګډ علمي کتابتون کې ثبت شول.');
+    } catch (e) { Alert.alert('ستونزه', 'فایل کتابتون ته اضافه نه شو.'); }
+  }
+
+  async function renameSharedAcademicResource(id, title) {
+    const clean = String(title || '').trim();
+    if (!clean) { Alert.alert('خبرتیا', 'نوی ښکاره کېدونکی نوم ولیکئ.'); return; }
+    await saveSharedResources(sharedResources.map(row => row.id === id ? { ...row, title: clean } : row));
+  }
+
+  async function removeSharedAcademicResource(id) {
+    const linkedLessons = globalItems.filter(item => (item.sharedResourceIds || []).includes(id)).length;
+    const linkedHadith = JSON.stringify(sittaData || {}).includes(String(id));
+    if (linkedLessons || linkedHadith) {
+      Alert.alert('سرچینه تړلې ده', `دا فایل ${linkedLessons} درسونو${linkedHadith ? ' او لږ تر لږه یوه حدیثي برخه' : ''} سره تړلی دی. د لینکونو له لرې کولو مخکې یې له کتابتون څخه نه شو حذفولای.`);
+      return;
+    }
+    Alert.alert('د سرچینې لرې کول', 'دا فایل له ګډ کتابتون څخه لرې شي؟ اصلي فایل به د موبایل له زېرمتون څخه نه حذف کېږي.', [
+      { text: 'نه', style: 'cancel' },
+      { text: 'هو، لرې یې کړه', style: 'destructive', onPress: () => saveSharedResources(sharedResources.filter(row => row.id !== id)) }
+    ]);
+  }
+
+  async function replaceSharedAcademicResource(resource) {
+    try {
+      const picked = await DocumentPicker.getDocumentAsync({ type: resource.kind === 'audio' ? ['audio/*'] : (resource.kind === 'pdf' ? 'application/pdf' : '*/*'), copyToCacheDirectory: true, multiple: false });
+      if (picked.canceled || !picked.assets?.[0]) return;
+      const asset = picked.assets[0];
+      const uri = await keepPickedFile(asset, `shared-${resource.kind}`);
+      const updated = sharedResources.map(row => row.id === resource.id ? { ...row, uri, originalName: asset.name || row.originalName, size: Number(asset.size || 0), durationSeconds: resource.kind === 'audio' ? (Number(asset.duration) || await readAudioDurationSeconds(uri)) : null, replacedAt: new Date().toISOString() } : row);
+      await saveSharedResources(updated);
+      Alert.alert('بریالی شو', 'د سرچینې فایل بدل شو؛ نوم او تړاوونه یې خوندي پاتې شول.');
+    } catch (e) { Alert.alert('ستونزه', 'فایل بدل نه شو.'); }
+  }
+
+  function toggleSharedResourceLink(id) {
+    setFormSharedResourceIds(old => old.includes(id) ? old.filter(value => value !== id) : [...old, id]);
+  }
+
+  function ensureScholarTaxonomy(name) {
+    if (!name || scholarTaxonomy[name]) return;
+    const tree = {};
+    SECTIONS.forEach((section, sectionIndex) => { tree[section] = getSectionFolders(section).map((folder, folderIndex) => ({ id: `sch-${encodeURIComponent(name)}-sec-${sectionIndex}-folder-${encodeURIComponent(folder.name)}`, name: folder.name, children: (folder.children || []).map(child => ({ id: `sch-${encodeURIComponent(name)}-sec-${sectionIndex}-child-${encodeURIComponent(folder.name)}-${encodeURIComponent(child)}`, name: child })) })); });
+    const updated = { ...scholarTaxonomy, [name]: tree };
+    setScholarTaxonomy(updated);
+    saveData(STORAGE.scholarTaxonomy, updated);
+  }
+
+  function getScholarTaxonomyPath(scholar, section, folder, child) {
+    if (!scholar) return null;
+    const tree = scholarTaxonomy[scholar] || {};
+    const sectionId = `scholar-section-${SECTIONS.indexOf(section) >= 0 ? SECTIONS.indexOf(section) : section}`;
+    const roots = tree[section] || [];
+    const root = roots.find(row => row.name === folder);
+    const childRow = root?.children?.find(row => row.name === child);
+    return { sectionId, sectionName: section, folderId: root?.id || `sch-${encodeURIComponent(scholar)}-sec-${Math.max(0, SECTIONS.indexOf(section))}-folder-${encodeURIComponent(folder || '')}`, folderName: folder || '', childId: childRow?.id || (child ? `sch-${encodeURIComponent(scholar)}-sec-${Math.max(0, SECTIONS.indexOf(section))}-child-${encodeURIComponent(folder || '')}-${encodeURIComponent(child)}` : ''), childName: child || '' };
+  }
+
+  async function addCustomSittaBook() {
+    const name = newSittaBookName.trim();
+    if (!name) { Alert.alert('خبرتیا', 'د حدیثي کتاب نوم ولیکئ.'); return; }
+    const kitabs = newSittaBookKitabs.split(/[\n،,;]+/).map(x => x.trim()).filter(Boolean);
+    const book = { id: `custom-hadith-${Date.now()}`, name, author: newSittaBookAuthor.trim() || 'مؤلف نه دی ثبت شوی', collection: sittaCollection, custom: true, kitabs };
+    const updated = [book, ...customSittaBooks];
+    setCustomSittaBooks(updated);
+    await saveData(STORAGE.customSittaBooks, updated);
+    setNewSittaBookName(''); setNewSittaBookAuthor(''); setNewSittaBookKitabs('');
+    Alert.alert('بریالی شو', 'نوی حدیثي کتاب جوړ شو.');
+  }
+
+  function getSittaKitabTitles(book) {
+    if (!book) return [];
+    if (book.custom) return Array.isArray(book.kitabs) ? book.kitabs : [];
+    return book.id === 'mishkat' ? MISHKAT_KITAB_TITLES : (SIHAH_SITTA_KITAB_TITLES[book.id] || []);
+  }
+
   async function addGlobalItem() {
     const savedAsQuran = quranMode;
     const parsedPageMap = savedAsQuran ? parseQuranPageMap(formPageMap) : [];
@@ -1555,6 +1681,7 @@ export default function App() {
         audio: formAudio,
         audioTracks: formAudioTracks.length ? formAudioTracks : (formAudio ? [{ id: `audio-${Date.now()}`, name: 'آډیو', uri: formAudio }] : []),
         attachments: formAttachments,
+        sharedResourceIds: [...new Set(formSharedResourceIds)],
         audioStartSeconds: parsedOptionalAudioStart,
         pdfPage: parsedOptionalPdfPage,
         section: selectedSection,
@@ -1601,7 +1728,9 @@ export default function App() {
       linkedPdfMaterialId: formLinkedPdfMaterialId || '',
       linkedAudioStartSeconds: parsedLinkedAudioStart,
       linkedPdfPage: parsedLinkedPdfPage,
+      sharedResourceIds: [...new Set(formSharedResourceIds)],
       scholar: formScholar.trim() || existingItem?.scholar || '',
+      scholarTaxonomyPath: getScholarTaxonomyPath(formScholar.trim() || existingItem?.scholar || '', quranMode ? 'قرآن کریم او علوم القرآن' : selectedSection, quranMode ? 'قرآن کریم' : (formFolderParentChoice || selectedFolder), formFolderParentChoice ? selectedFolder : ''),
       language: formLanguage,
       madhhab: formMadhhab.trim(),
       resourceCategory: formResourceType,
@@ -1638,6 +1767,7 @@ export default function App() {
         await saveFavorites(favorites.map(favorite => favorite.id === existingItem.id ? { ...favorite, ...newItem } : favorite));
       }
     }
+    if (newItem.scholar && !scholarTaxonomy[newItem.scholar]) ensureScholarTaxonomy(newItem.scholar);
     if (newItem.scholar && !scholarNames.includes(newItem.scholar)) {
       const updatedScholarNames = [...scholarNames, newItem.scholar];
       setScholarNames(updatedScholarNames);
@@ -2593,6 +2723,14 @@ export default function App() {
     await saveData(STORAGE.sitta, updated);
   }
 
+  async function addCustomSittaKitab() {
+    const name = newSittaKitabName.trim();
+    if (!name || !selectedSittaBook?.custom) { Alert.alert('خبرتیا', 'د نوي کتاب نوم ولیکئ.'); return; }
+    const updated = customSittaBooks.map(book => book.id === selectedSittaBook.id ? { ...book, kitabs: [...(book.kitabs || []), name] } : book);
+    setCustomSittaBooks(updated); await saveData(STORAGE.customSittaBooks, updated);
+    setSelectedSittaBook(updated.find(book => book.id === selectedSittaBook.id)); setNewSittaKitabName('');
+  }
+
   function getSittaBabRows() {
     if (!selectedSittaBook || !selectedSittaKitab) return [];
     return sittaData?.[selectedSittaBook.id]?.[selectedSittaKitab] || [];
@@ -2600,6 +2738,12 @@ export default function App() {
 
   function getSittaKitabMedia() {
     return sittaData?.[selectedSittaBook?.id]?.__kitabMedia?.[selectedSittaKitab] || {};
+  }
+
+
+  // د هر حدیثي کتاب د عمومي سرچینو زېرمتون؛ د کتابونو/بابونو له فایلونو جلا ساتل کېږي.
+  function getSittaBookMedia(bookId = selectedSittaBook?.id) {
+    return sittaData?.[bookId]?.__bookMedia || {};
   }
 
   async function pickAndSaveSittaMedia(level, targetId = null, number = null, kind = 'audio', replaceFileId = '') {
@@ -2637,7 +2781,9 @@ export default function App() {
         }
         return { ...record, [`${kind}Files`]: merged, [kind]: merged[0]?.uri || '' };
       };
-      if (level === 'kitab') {
+      if (level === 'book') {
+        bookRows.__bookMedia = appendMedia(bookRows.__bookMedia || {});
+      } else if (level === 'kitab') {
         const mediaRows = { ...(bookRows.__kitabMedia || {}) };
         mediaRows[selectedSittaKitab] = appendMedia(mediaRows[selectedSittaKitab] || {});
         bookRows.__kitabMedia = mediaRows;
@@ -2673,7 +2819,9 @@ export default function App() {
       const remaining = current.filter(file => file.id !== fileId);
       return { ...record, [`${kind}Files`]: remaining, [kind]: remaining[0]?.uri || '' };
     };
-    if (level === 'kitab') {
+    if (level === 'book') {
+      bookRows.__bookMedia = updateRecord(bookRows.__bookMedia || {});
+    } else if (level === 'kitab') {
       const mediaRows = { ...(bookRows.__kitabMedia || {}) };
       mediaRows[selectedSittaKitab] = updateRecord(mediaRows[selectedSittaKitab] || {});
       bookRows.__kitabMedia = mediaRows;
@@ -2749,6 +2897,26 @@ export default function App() {
     setSittaHadithNumber('');
     setSittaHadithAudioTime('');
     setSittaHadithPdfPage('');
+  }
+
+  async function toggleSittaHadithSharedResource(babId, hadithNumber, resourceId) {
+    if (!selectedSittaBook || !selectedSittaKitab) return;
+    const bookRows = { ...(sittaData[selectedSittaBook.id] || {}) };
+    const babRows = (bookRows[selectedSittaKitab] || []).map(bab => {
+      if (bab.id !== babId) return bab;
+      const hadithNumbers = (bab.hadithNumbers || []).map(raw => {
+        const row = typeof raw === 'object' ? raw : { number: raw };
+        if (String(row.number) !== String(hadithNumber)) return raw;
+        const ids = Array.isArray(row.sharedResourceIds) ? row.sharedResourceIds : [];
+        const nextIds = ids.includes(resourceId) ? ids.filter(id => id !== resourceId) : [...ids, resourceId];
+        return { ...row, sharedResourceIds: nextIds };
+      });
+      return { ...bab, hadithNumbers };
+    });
+    bookRows[selectedSittaKitab] = babRows;
+    await saveSittaData({ ...sittaData, [selectedSittaBook.id]: bookRows });
+    const updatedBab = babRows.find(row => row.id === babId);
+    if (updatedBab) setSelectedSittaBab(updatedBab);
   }
 
   async function deleteSittaBab(babId) {
@@ -2936,6 +3104,7 @@ export default function App() {
 
   function openScholar(name) {
     setSelectedScholar(name);
+    ensureScholarTaxonomy(name);
     setSelectedSection('');
     setScreen('scholar');
   }
@@ -3263,6 +3432,10 @@ export default function App() {
       const rows = sittaData?.[book.id] || {};
       const collectionLabel = book.id === 'mishkat' ? 'مشکاة المصابيح' : 'کتب تسعه';
       const kitabTitles = book.id === 'mishkat' ? MISHKAT_KITAB_TITLES : (SIHAH_SITTA_KITAB_TITLES[book.id] || []);
+      const rootMedia = rows.__bookMedia || {};
+      ['audio','pdf'].forEach(kind => getSittaMediaFiles(rootMedia, kind).forEach(file => {
+        if (has(`${file.name} ${book.name} ${collectionLabel} عمومي`)) matches.push({ id:`sitta-root-file-${book.id}-${file.id}`, title:file.name, _resultType:'sittaFile', _sittaLevel:'book', _sittaKind:kind, _sittaFile:file, _sittaBook:book, _resultLabel:`${collectionLabel} · ${book.name} · عمومي ${kind === 'audio' ? 'آډیو' : 'PDF'}` });
+      }));
       kitabTitles.forEach(kitab => {
         const kitabMedia = rows.__kitabMedia?.[kitab] || {};
         if (has(`${book.name} ${kitab} ${collectionLabel} ${getSittaMediaFiles(kitabMedia, 'audio').map(f => f.name).join(' ')} ${getSittaMediaFiles(kitabMedia, 'pdf').map(f => f.name).join(' ')}`)) {
@@ -3298,7 +3471,7 @@ export default function App() {
     setSelectedSittaKitab(item._sittaKitab || '');
     setSittaCollection(item._sittaBook.id === 'mishkat' ? 'mishkat' : 'kutubTisah');
     if (item._sittaBab) setSelectedSittaBab(item._sittaBab);
-    setScreen(item._sittaLevel === 'kitab' ? 'sittaBabs' : 'sittaBabDetails');
+    setScreen(item._sittaLevel === 'book' || item._sittaLevel === 'kitab' ? (item._sittaLevel === 'book' ? 'sittaKitabs' : 'sittaBabs') : 'sittaBabDetails');
   }
 
   async function saveSearchInlineEdit(item) {
@@ -3350,7 +3523,9 @@ export default function App() {
         const list = Array.isArray(record[key]) && record[key].length ? record[key] : getSittaMediaFiles(record, item._sittaKind);
         return { ...record, [key]: list.map(file => file.id === item._sittaFile?.id ? { ...file, originalName: file.originalName || file.name || '', name: value, displayName: value } : file) };
       };
-      if (item._sittaLevel === 'kitab') {
+      if (item._sittaLevel === 'book') {
+        bookRows.__bookMedia = renameRecord(bookRows.__bookMedia || {});
+      } else if (item._sittaLevel === 'kitab') {
         const media = { ...(bookRows.__kitabMedia || {}) };
         media[item._sittaKitab] = renameRecord(media[item._sittaKitab] || {});
         bookRows.__kitabMedia = media;
@@ -3388,7 +3563,7 @@ export default function App() {
       setSelectedSittaKitab(item._sittaKitab);
       if (item._sittaBab) setSelectedSittaBab(item._sittaBab);
       setSittaCollection(item._sittaBook?.id === 'mishkat' ? 'mishkat' : 'kutubTisah');
-      setScreen(item._sittaLevel === 'kitab' ? 'sittaBabs' : 'sittaBabDetails');
+      setScreen(item._sittaLevel === 'book' ? 'sittaKitabs' : item._sittaLevel === 'kitab' ? 'sittaBabs' : 'sittaBabDetails');
       return;
     }
     if (item._resultType === 'book') {
@@ -3433,7 +3608,9 @@ export default function App() {
               const remaining = current.filter(file => file.id !== item._sittaFile?.id);
               return { ...record, [kindKey]: remaining, [item._sittaKind]: remaining[0]?.uri || '' };
             };
-            if (item._sittaLevel === 'kitab') {
+            if (item._sittaLevel === 'book') {
+              bookRows.__bookMedia = removeFromRecord(bookRows.__bookMedia || {});
+            } else if (item._sittaLevel === 'kitab') {
               const media = { ...(bookRows.__kitabMedia || {}) };
               media[item._sittaKitab] = removeFromRecord(media[item._sittaKitab] || {});
               bookRows.__kitabMedia = media;
@@ -3487,6 +3664,7 @@ export default function App() {
     setFormLinkedPdfMaterialId(item.linkedPdfMaterialId || (legacyLinkedSource?.pdf ? item.linkedGeneralMaterialId : ''));
     setFormLinkedAudioStartSeconds(item.linkedAudioStartSeconds != null ? String(item.linkedAudioStartSeconds) : '');
     setFormLinkedPdfPage(item.linkedPdfPage != null ? String(item.linkedPdfPage) : '');
+    setFormSharedResourceIds(Array.isArray(item.sharedResourceIds) ? item.sharedResourceIds : []);
     setFormLanguage(item.language || 'پښتو');
     setFormMadhhab(item.madhhab || '');
     setFormResourceType(item.resourceCategory || item.resourceType || 'درس');
@@ -3935,6 +4113,7 @@ export default function App() {
     const updated = [...new Set([...scholarNames, name])];
     setScholarNames(updated);
     await saveData(STORAGE.scholarNames, updated);
+    ensureScholarTaxonomy(name);
     setNewScholarName('');
   }
 
@@ -4407,6 +4586,12 @@ export default function App() {
               </View>
 
               {/* د پخواني درس دوام او شخصي نوټونه؛ اذکار به په جلا نوي سیستم کې تنظیم شي */}
+              <TouchableOpacity style={[styles.homeWideCard, { marginTop: 10 }]} onPress={() => setScreen('sharedLibrary')} activeOpacity={0.82}>
+                <Ionicons name="library-outline" color={COLORS.gold} size={25} />
+                <View style={styles.homeWideTextBox}><Text style={styles.homeWideTitle}>ګډ علمي کتابتون</Text><Text style={styles.homeWideSubtitle}>یو فایل په څو علمي برخو او درسونو کې ونښلوئ</Text></View>
+                <Ionicons name="chevron-back" size={18} color={COLORS.gold} />
+              </TouchableOpacity>
+
               <View style={styles.homeWideCardsRow}>
                 <TouchableOpacity
                   style={homeFolderCardStyle('wide_0', styles.homeWideCard)}
@@ -4484,6 +4669,32 @@ export default function App() {
           </ScrollView>
         )}
 
+        {screen === 'sharedLibrary' && (
+          <ScrollView contentContainerStyle={styles.pageContent} keyboardShouldPersistTaps="always" keyboardDismissMode="none">
+            <PageHeader title="ګډ علمي کتابتون" subtitle="یو فایل، څو علمي برخې او درسونه" onBack={goBack} />
+            <View style={styles.formCard}>
+              <Text style={[styles.cardHeading, { color: settings.headingColor }]}>نوی عمومي فایل اضافه کړئ</Text>
+              <Field textColor={settings.textColor} label="د فایل ښکاره کېدونکی نوم (اختیاري)" value={sharedResourceTitle} onChangeText={setSharedResourceTitle} placeholder="که تش وي، د فایل نوم کارېږي" />
+              <Text style={[styles.cardHeading, { color: settings.headingColor }]}>د فایل ډول</Text>
+              {['audio','pdf','other'].map(kind => <TouchableOpacity key={kind} style={styles.optionRow} onPress={() => setSharedResourceKind(kind)}><Text style={[styles.optionText, { color: settings.textColor }]}>{kind === 'audio' ? 'آډیو' : kind === 'pdf' ? 'PDF کتاب' : 'نور فایلونه'}</Text><Text style={styles.optionCheck}>{sharedResourceKind === kind ? '✓' : '○'}</Text></TouchableOpacity>)}
+              <Text style={[styles.cardHeading, { color: settings.headingColor }]}>اصلي علمي برخه</Text>
+              <View style={{ flexDirection: 'row-reverse', flexWrap: 'wrap', gap: 7 }}>{SECTIONS.map(section => <TouchableOpacity key={section} onPress={() => setSharedResourceSection(section)} style={{ padding: 8, borderRadius: 8, borderWidth: 1, borderColor: sharedResourceSection === section ? COLORS.gold : COLORS.border }}><Text style={{ color: COLORS.white }}>{section}</Text></TouchableOpacity>)}</View>
+              <GoldButton title="＋ فایل کتابتون ته اضافه کړه" onPress={addSharedAcademicResource} />
+            </View>
+            <Text style={[styles.cardHeading, { color: settings.headingColor }]}>ثبت شوې سرچینې ({sharedResources.length})</Text>
+            {sharedResources.map(resource => <View key={resource.id} style={styles.formCard}>
+              <Text style={[styles.listCardTitle, { color: settings.textColor }]}>{resource.title}</Text><Text style={styles.smallMuted}>{resource.section} · {resource.kind === 'audio' ? 'آډیو' : resource.kind === 'pdf' ? 'PDF' : 'فایل'} · {formatFileSize(resource.size)}{resource.durationSeconds ? ` · ${formatDuration(resource.durationSeconds * 1000)}` : ''}</Text>
+              <View style={{ flexDirection: 'row-reverse', flexWrap: 'wrap', gap: 7 }}>
+                <GoldButton title="✎ نوم بدلول" secondary onPress={() => { setEditingSharedResourceId(resource.id); setEditingSharedResourceTitle(resource.title); }} />
+                <GoldButton title="پرانیستل" secondary onPress={() => resource.kind === 'audio' ? startAudio({ id: resource.id, title: resource.title, audio: resource.uri, section: resource.section }, 0) : resource.kind === 'pdf' ? openPdf({ id: resource.id, title: resource.title, pdf: resource.uri }, 1) : shareFile(resource.uri, '*/*')} />
+                <GoldButton title="فایل بدلول" secondary onPress={() => replaceSharedAcademicResource(resource)} />
+                <GoldButton title="حذف" secondary onPress={() => removeSharedAcademicResource(resource.id)} />
+              </View>
+            </View>)}
+            {!sharedResources.length ? <Text style={styles.smallMuted}>تر اوسه فایل نه دی ثبت شوی.</Text> : null}
+          </ScrollView>
+        )}
+
         {screen === 'scholars' && (
           <ScrollView contentContainerStyle={styles.pageContent} keyboardShouldPersistTaps="always" keyboardDismissMode="none">
             <PageHeader
@@ -4535,13 +4746,15 @@ export default function App() {
               onBack={goBack}
             />
 
-            {HOME_SECTION_GROUPS.map(group => {
-              const count = globalItems.filter(item => item.scholar === selectedScholar && group.sections.includes(item.section)).length;
-              return <TouchableOpacity key={group.key} style={styles.listCard} onPress={() => { setSelectedHomeGroup(group); setScreen('scholarSection'); }}>
-                <Text style={styles.listCardIcon}>▤</Text>
-                <View style={styles.flexText}><Text style={[styles.listCardTitle, { color: settings.textColor }]}>{group.title}</Text><Text style={styles.smallMuted}>{count} ثبت شوي درسونه او فایلونه</Text></View>
-                <Text style={styles.lessonArrow}>‹</Text>
-              </TouchableOpacity>;
+            {SECTIONS.map(section => {
+              const count = globalItems.filter(item => item.scholar === selectedScholar && canonicalSection(item.section) === canonicalSection(section)).length;
+              const folders = getSectionFolders(section);
+              return <View key={section} style={{ marginBottom: 8 }}>
+                <TouchableOpacity style={styles.listCard} onPress={() => { setSelectedSection(section); setSelectedFolder(''); setSelectedFolderParent(''); setSelectedScholarSubFolder(''); setSelectedHomeGroup({ key: `scholar-${section}`, title: section, sections: [section] }); setScreen('scholarSection'); }}>
+                  <Text style={styles.listCardIcon}>▤</Text><View style={styles.flexText}><Text style={[styles.listCardTitle, { color: settings.textColor }]}>{section}</Text><Text style={styles.smallMuted}>{count} درسونه · {folders.length} اصلي فولډرونه</Text></View><Text style={styles.lessonArrow}>‹</Text>
+                </TouchableOpacity>
+                {folders.map(folder => { const subCount = globalItems.filter(item => item.scholar === selectedScholar && canonicalSection(item.section) === canonicalSection(section) && item.folder === folder.name && !(item.folderParent || '')).length; return <View key={`${section}-${folder.name}`}><TouchableOpacity onPress={() => { setSelectedSection(section); setSelectedFolder(folder.name); setSelectedFolderParent(''); setSelectedScholarSubFolder(''); setScreen('scholarSection'); }} style={{ marginRight: 22, paddingVertical: 7, paddingHorizontal: 12, borderBottomWidth: 1, borderBottomColor: COLORS.border, flexDirection: 'row-reverse' }}><Text style={{ color: COLORS.goldLight, flex: 1, textAlign: 'right' }}>{folder.name}</Text><Text style={styles.smallMuted}>{subCount}</Text></TouchableOpacity>{(folder.children || []).map(child => { const childCount = globalItems.filter(item => item.scholar === selectedScholar && canonicalSection(item.section) === canonicalSection(section) && item.folder === child && item.folderParent === folder.name).length; return <TouchableOpacity key={`${section}-${folder.name}-${child}`} onPress={() => { setSelectedSection(section); setSelectedFolder(child); setSelectedFolderParent(folder.name); setSelectedScholarSubFolder(child); setScreen('scholarSection'); }} style={{ marginRight: 42, paddingVertical: 6, paddingHorizontal: 12, borderBottomWidth: 1, borderBottomColor: COLORS.border, flexDirection: 'row-reverse' }}><Text style={{ color: COLORS.muted, flex: 1, textAlign: 'right' }}>↳ {child}</Text><Text style={styles.smallMuted}>{childCount}</Text></TouchableOpacity>; })}</View>; })}
+              </View>;
             })}
           </ScrollView>
         )}
@@ -4550,7 +4763,7 @@ export default function App() {
           <ScrollView contentContainerStyle={styles.pageContent} keyboardShouldPersistTaps="always" keyboardDismissMode="none">
             <PageHeader title={selectedHomeGroup.title} subtitle={selectedScholar} onBack={goBack} />
             {selectedHomeGroup.sections.map(section => {
-              const rows = globalItems.filter(item => item.scholar === selectedScholar && item.section === section);
+              const rows = globalItems.filter(item => item.scholar === selectedScholar && canonicalSection(item.section) === canonicalSection(section) && (!selectedFolder || item.folder === selectedFolder) && (!selectedFolderParent || (item.folderParent || '') === selectedFolderParent));
               return <View key={section} style={{ marginBottom: 12 }}>
                 <Text style={[styles.cardHeading, { color: settings.headingColor }]}>{section}</Text>
                 {rows.map(item => <View key={item.id} style={[styles.lessonCard, { flexDirection: 'row-reverse', alignItems: 'center' }]}>
@@ -5275,6 +5488,16 @@ export default function App() {
               ) : <Text style={styles.smallMuted}>اضافي اسناد او فایلونه هم په یوه ځل انتخابولای شې.</Text>}
             </View>
 
+            <View style={styles.formCard}>
+              <Text style={[styles.cardHeading, { color: settings.headingColor }]}>له ګډ علمي کتابتون څخه سرچینې ونښلوئ</Text>
+              <Text style={styles.smallMuted}>دا سرچینې د قرآن، حدیث، فقه، عقیدې او نورو علمي برخو لپاره ګډې دي. یوازې هغه فایلونه وټاکئ چې همدې درس ته اړوند وي؛ فایل بیا نه کاپي کېږي.</Text>
+              {sharedResources.map(resource => <TouchableOpacity key={resource.id} onPress={() => toggleSharedResourceLink(resource.id)} style={{ flexDirection: 'row-reverse', alignItems: 'center', paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: COLORS.border }}>
+                <Ionicons name={formSharedResourceIds.includes(resource.id) ? 'checkbox' : 'square-outline'} size={21} color={COLORS.gold} />
+                <View style={{ flex: 1, marginRight: 8 }}><Text style={{ color: COLORS.white, textAlign: 'right' }}>{resource.title}</Text><Text style={styles.smallMuted}>{resource.section} · {resource.kind === 'audio' ? 'آډیو' : resource.kind === 'pdf' ? 'PDF' : 'فایل'} · {formatFileSize(resource.size)}</Text></View>
+              </TouchableOpacity>)}
+              {!sharedResources.length ? <Text style={styles.smallMuted}>تر اوسه ګډ کتابتون تش دی. لومړی یې د کورپاڼې له ګډ کتابتون څخه فایلونه ورزیات کړئ.</Text> : null}
+              <Text style={styles.smallMuted}>ټاکل شوي فایلونه: {formSharedResourceIds.length}</Text>
+            </View>
             <GoldButton
               title={editingGlobalItemId ? 'اصلاحات خوندي کړئ' : (generalMaterialsScope ? 'عمومي مواد خوندي کړئ' : t("درس خوندي کړئ"))}
               onPress={addGlobalItem}
@@ -5340,6 +5563,15 @@ export default function App() {
                 </View>
               );
             })() : null}
+
+            {(selectedItem?.sharedResourceIds || []).length > 0 ? <View style={styles.formCard}>
+              <Text style={[styles.cardHeading, { color: settings.headingColor }]}>د ګډ کتابتون تړلې سرچینې</Text>
+              {(selectedItem.sharedResourceIds || []).map(id => {
+                const resource = sharedResources.find(row => row.id === id);
+                if (!resource) return <Text key={id} style={styles.smallMuted}>یوه تړلې سرچینه په کتابتون کې نه موندل کېږي.</Text>;
+                return <View key={id} style={{ marginBottom: 9 }}><Text style={{ color: COLORS.white, textAlign: 'right' }}>{resource.title} · {resource.section}</Text><GoldButton title={resource.kind === 'audio' ? '▶ دا آډیو واوره' : resource.kind === 'pdf' ? '▤ دا PDF ولوله' : 'فایل شریک کړه'} secondary onPress={() => resource.kind === 'audio' ? startAudio({ id: resource.id, title: resource.title, audio: resource.uri, section: resource.section, scholar: selectedItem.scholar || '' }, 0) : resource.kind === 'pdf' ? openPdf({ id: resource.id, title: resource.title, pdf: resource.uri }, 1) : shareFile(resource.uri, '*/*')} /></View>;
+              })}
+            </View> : null}
 
             {selectedItem?.resourceType === 'quran' ? (
               <View style={styles.formCard}>
@@ -5861,15 +6093,33 @@ export default function App() {
         {screen === 'sittaBooks' && (
           <ScrollView contentContainerStyle={styles.pageContent} keyboardShouldPersistTaps="always" keyboardDismissMode="none">
             <PageHeader title={sittaCollection === 'mishkat' ? 'مشكاة المصابيح' : 'کتب تسعه'} subtitle={sittaCollection === 'mishkat' ? 'د مشکاة المصابيح کتابونه' : 'نه مشهور حدیثي ټولګې'} onBack={goBack} />
+            <View style={styles.formCard}><Text style={[styles.cardHeading, { color: settings.headingColor }]}>نوی حدیثي کتاب جوړ کړئ</Text><Field textColor={settings.textColor} label="د کتاب نوم" value={newSittaBookName} onChangeText={setNewSittaBookName} placeholder="لکه: مسند أبي يعلى" /><Field textColor={settings.textColor} label="مؤلف" value={newSittaBookAuthor} onChangeText={setNewSittaBookAuthor} placeholder="د مؤلف نوم" /><Field textColor={settings.textColor} label="د کتابونو / Kitab نومونه (هر نوم په نوې کرښه)" value={newSittaBookKitabs} onChangeText={setNewSittaBookKitabs} placeholder="كتاب الإيمان\nكتاب العلم\nكتاب الصلاة" multiline /><GoldButton title="＋ نوی حدیثي کتاب جوړ کړه" onPress={addCustomSittaBook} /></View>
             {fileNameEdit?.type === 'sittaMedia' ? <View style={styles.formCard}><Text style={[styles.cardHeading, { color: settings.headingColor }]}>د فایل ښکاره کېدونکی نوم اصلاح کړئ</Text><Field textColor={settings.textColor} label="نوی نوم" value={fileNameEdit.value} onChangeText={value => setFileNameEdit(previous => ({ ...previous, value }))} placeholder="سم او لنډ نوم ولیکئ" /><View style={{ flexDirection: 'row-reverse', gap: 8 }}><GoldButton title="نوم خوندي کړه" onPress={saveRenamedMediaFile} /><GoldButton title="لغوه" secondary onPress={() => setFileNameEdit(null)} /></View></View> : null}
-            {(sittaCollection === 'mishkat' ? [MISHKAT_BOOK] : SIHAH_SITTA).map(book => <TouchableOpacity key={book.id} style={styles.listCard} onPress={() => { setSelectedSittaBook(book); setScreen('sittaKitabs'); }}><View style={styles.flexText}><Text style={[styles.listCardTitle, { color: settings.textColor }]}>{book.name}</Text><Text style={styles.smallMuted}>{book.author} · {(sittaCollection === 'mishkat' ? MISHKAT_KITAB_TITLES : (SIHAH_SITTA_KITAB_TITLES[book.id] || [])).length} کتابونه</Text></View><Text style={styles.lessonArrow}>‹</Text></TouchableOpacity>)}
+            {(sittaCollection === 'mishkat' ? [MISHKAT_BOOK, ...customSittaBooks.filter(book => book.collection === 'mishkat')] : [...SIHAH_SITTA, ...customSittaBooks.filter(book => book.collection !== 'mishkat')]).map(book => <View key={book.id} style={styles.listCard}><TouchableOpacity style={{ flex: 1, flexDirection: 'row-reverse', alignItems: 'center' }} onPress={() => { setSelectedSittaBook(book); setScreen('sittaKitabs'); }}><View style={styles.flexText}><Text style={[styles.listCardTitle, { color: settings.textColor }]}>{book.name}</Text><Text style={styles.smallMuted}>{book.author} · {getSittaKitabTitles(book).length} کتابونه</Text></View><Text style={styles.lessonArrow}>‹</Text></TouchableOpacity>{book.custom ? <TouchableOpacity onPress={() => Alert.alert('کتاب حذف', `«${book.name}» له لېسته لرې شي؟ په دې کتاب کې ثبت شوي فایلونه به هم ورسره لرې شي.`, [{text:'نه',style:'cancel'},{text:'هو، حذف',style:'destructive',onPress:async()=>{const next=customSittaBooks.filter(row=>row.id!==book.id);setCustomSittaBooks(next);await saveData(STORAGE.customSittaBooks,next);}}])} style={{ padding: 8 }}><Ionicons name="trash-outline" color={COLORS.muted} size={19} /></TouchableOpacity> : null}</View>)}
           </ScrollView>
         )}
 
         {screen === 'sittaKitabs' && selectedSittaBook && (
           <ScrollView contentContainerStyle={styles.pageContent} keyboardShouldPersistTaps="always" keyboardDismissMode="none">
-            <PageHeader title={selectedSittaBook.name} subtitle="عربي Kitab فولډرونه" onBack={goBack} />
-            {(selectedSittaBook.id === 'mishkat' ? MISHKAT_KITAB_TITLES : (SIHAH_SITTA_KITAB_TITLES[selectedSittaBook.id] || [])).map((title, index) => <TouchableOpacity key={`${selectedSittaBook.id}-${index}`} style={styles.listCard} onPress={() => { setSelectedSittaKitab(title); setScreen('sittaBabs'); }}><View style={styles.flexText}><Text style={[styles.listCardTitle, { color: settings.textColor, textAlign: 'right' }]}>{title}</Text><Text style={styles.smallMuted}>کتاب {index + 1}</Text></View><Text style={styles.lessonArrow}>‹</Text></TouchableOpacity>)}
+            <PageHeader title={selectedSittaBook.name} subtitle="د کتاب عمومي زېرمتون او عربي Kitab فولډرونه" onBack={goBack} />
+            {fileNameEdit?.type === 'sittaMedia' ? <View style={styles.formCard}><Text style={[styles.cardHeading, { color: settings.headingColor }]}>د فایل ښکاره کېدونکی نوم اصلاح کړئ</Text><Field textColor={settings.textColor} label="نوی نوم" value={fileNameEdit.value} onChangeText={value => setFileNameEdit(previous => ({ ...previous, value }))} placeholder="سم او لنډ نوم ولیکئ" /><View style={{ flexDirection: 'row-reverse', gap: 8 }}><GoldButton title="نوم خوندي کړه" onPress={saveRenamedMediaFile} /><GoldButton title="لغوه" secondary onPress={() => setFileNameEdit(null)} /></View></View> : null}
+            <View style={styles.formCard}>
+              <Text style={[styles.cardHeading, { color: settings.headingColor }]}>د دې ټولګې عمومي سرچینې</Text>
+              <Text style={styles.smallMuted}>دا فایلونه د ټول کتاب لپاره ساتل کېږي؛ په باب یا حدیث کې یې یوازې هغه وخت وټاکئ چې اړوند وي.</Text>
+              <GoldButton title="♫ عمومي آډیو اضافه کړئ" secondary onPress={() => pickAndSaveSittaMedia('book', null, null, 'audio')} />
+              <GoldButton title="▤ عمومي PDF اضافه کړئ" secondary onPress={() => pickAndSaveSittaMedia('book', null, null, 'pdf')} />
+              {['audio','pdf'].flatMap(kind => getSittaMediaFiles(getSittaBookMedia(selectedSittaBook.id), kind).map((file,index) => <View key={`root-${kind}-${file.id || index}`} style={{marginTop:8}}>
+                <Text style={styles.smallMuted}>{file.name || (kind === 'audio' ? 'عمومي آډیو' : 'عمومي PDF')} · {formatFileSize(file.size)}{file.durationSeconds ? ` · ${formatDuration(file.durationSeconds * 1000)}` : ''}</Text>
+                <GoldButton title={kind === 'audio' ? '▶ عمومي آډیو واوره' : '▤ عمومي PDF ولوله'} secondary onPress={() => openSittaMediaFile(file, kind, selectedSittaBook.name, `book-${selectedSittaBook.id}`)} />
+                <View style={{flexDirection:'row-reverse',gap:8}}>
+                  <GoldButton title="✎ نوم بدلول" secondary onPress={() => setFileNameEdit({type:'sittaMedia',level:'book',kind,fileId:file.id,value:file.name || ''})} />
+                  <GoldButton title="بدلول" secondary onPress={() => pickAndSaveSittaMedia('book',null,null,kind,file.id)} />
+                  <GoldButton title="حذف" secondary onPress={() => Alert.alert('د فایل لرې کول','دا فایل له عمومي زېرمتون څخه لرې شي؟',[{text:'نه',style:'cancel'},{text:'هو',style:'destructive',onPress:()=>removeSittaMediaFile('book',null,null,kind,file.id)}])} />
+                </View>
+              </View>))}
+            </View>
+            {selectedSittaBook.custom ? <View style={styles.formCard}><Text style={[styles.cardHeading, { color: settings.headingColor }]}>دې کتاب ته نوی Kitab / کتاب اضافه کړئ</Text><Field textColor={settings.textColor} label="د کتاب نوم" value={newSittaKitabName} onChangeText={setNewSittaKitabName} placeholder="كتاب التوحيد" /><GoldButton title="＋ کتاب اضافه کړئ" onPress={addCustomSittaKitab} /></View> : null}
+            {getSittaKitabTitles(selectedSittaBook).map((title, index) => <TouchableOpacity key={`${selectedSittaBook.id}-${index}`} style={styles.listCard} onPress={() => { setSelectedSittaKitab(title); setScreen('sittaBabs'); }}><View style={styles.flexText}><Text style={[styles.listCardTitle, { color: settings.textColor, textAlign: 'right' }]}>{title}</Text><Text style={styles.smallMuted}>کتاب {index + 1}</Text></View><Text style={styles.lessonArrow}>‹</Text></TouchableOpacity>)}
           </ScrollView>
         )}
 
@@ -5912,8 +6162,9 @@ export default function App() {
                   {getSittaMediaFiles(media, 'audio').map((file, fileIndex) => <View key={file.id || `ha-${fileIndex}`}><Text style={styles.smallMuted}>{file.name || `آډیو ${fileIndex + 1}`} · {formatFileSize(file.size)}{file.durationSeconds ? ` · ${formatDuration(file.durationSeconds * 1000)}` : ''}</Text><GoldButton title={`▶ د حدیث آډیو ${fileIndex + 1} واوره`} onPress={() => openSittaMediaFile(file, 'audio', `حدیث ${number}`, `hadith-${selectedSittaBab.id}-${number}`)} /><View style={{ flexDirection: 'row-reverse', gap: 8 }}><GoldButton title="✎ نوم بدلول" secondary onPress={() => setFileNameEdit({ type: 'sittaMedia', level: 'hadith', targetId: selectedSittaBab.id, number, kind: 'audio', fileId: file.id, value: file.name || '' })} /><GoldButton title="بدلول" secondary onPress={() => pickAndSaveSittaMedia('hadith', selectedSittaBab.id, number, 'audio', file.id)} /><GoldButton title="حذف" secondary onPress={() => Alert.alert('د فایل حذف', 'دا آډیو له دې حدیث څخه لرې شي؟', [{ text: 'نه', style: 'cancel' }, { text: 'هو، حذف', style: 'destructive', onPress: () => removeSittaMediaFile('hadith', selectedSittaBab.id, number, 'audio', file.id) }])} /></View></View>)}
                   {getSittaMediaFiles(media, 'pdf').map((file, fileIndex) => <View key={file.id || `hp-${fileIndex}`}><Text style={styles.smallMuted}>{file.name || `PDF ${fileIndex + 1}`} · {formatFileSize(file.size)}</Text><GoldButton title={`▤ د حدیث PDF ${fileIndex + 1} ولوله`} secondary onPress={() => openSittaMediaFile(file, 'pdf', `حدیث ${number}`, `hadith-${selectedSittaBab.id}-${number}`)} /><View style={{ flexDirection: 'row-reverse', gap: 8 }}><GoldButton title="✎ نوم بدلول" secondary onPress={() => setFileNameEdit({ type: 'sittaMedia', level: 'hadith', targetId: selectedSittaBab.id, number, kind: 'pdf', fileId: file.id, value: file.name || '' })} /><GoldButton title="بدلول" secondary onPress={() => pickAndSaveSittaMedia('hadith', selectedSittaBab.id, number, 'pdf', file.id)} /><GoldButton title="حذف" secondary onPress={() => Alert.alert('د فایل حذف', 'دا PDF له دې حدیث څخه لرې شي؟', [{ text: 'نه', style: 'cancel' }, { text: 'هو، حذف', style: 'destructive', onPress: () => removeSittaMediaFile('hadith', selectedSittaBab.id, number, 'pdf', file.id) }])} /></View></View>)}
                   <Text style={styles.smallMuted}>د دې حدیث لپاره هم څو آډیو او څو PDF فایلونه ثبتولای شئ.</Text>
-                  {(selectedSittaBab.audio || getSittaKitabMedia().audio) && Number.isFinite(media.audioStartSeconds) ? <GoldButton title="▶ له عمومي آډیو څخه د دې حدیث ځای واوره" onPress={() => startAudio({ id: `sitta-general-audio-${selectedSittaBab.id}`, title: `${selectedSittaKitab} – حدیث ${number}`, audio: selectedSittaBab.audio || getSittaKitabMedia().audio, scholar: '', section: selectedSittaBook.name }, media.audioStartSeconds * 1000)} /> : null}
-                  {(selectedSittaBab.pdf || getSittaKitabMedia().pdf) && media.pdfPage ? <GoldButton title="▤ په عمومي PDF کې د حدیث مخ پرانیزه" secondary onPress={() => openPdf({ id: `sitta-general-pdf-${selectedSittaBab.id}`, title: `${selectedSittaKitab} – حدیث ${number}`, pdf: selectedSittaBab.pdf || getSittaKitabMedia().pdf }, media.pdfPage)} /> : null}
+                  {(selectedSittaBab.audio || getSittaKitabMedia().audio || getSittaBookMedia().audio) && Number.isFinite(media.audioStartSeconds) ? <GoldButton title="▶ له عمومي آډیو څخه د دې حدیث ځای واوره" onPress={() => startAudio({ id: `sitta-general-audio-${selectedSittaBab.id}`, title: `${selectedSittaKitab} – حدیث ${number}`, audio: selectedSittaBab.audio || getSittaKitabMedia().audio || getSittaBookMedia().audio, scholar: '', section: selectedSittaBook.name }, media.audioStartSeconds * 1000)} /> : null}
+                  {(selectedSittaBab.pdf || getSittaKitabMedia().pdf || getSittaBookMedia().pdf) && media.pdfPage ? <GoldButton title="▤ په عمومي PDF کې د حدیث مخ پرانیزه" secondary onPress={() => openPdf({ id: `sitta-general-pdf-${selectedSittaBab.id}`, title: `${selectedSittaKitab} – حدیث ${number}`, pdf: selectedSittaBab.pdf || getSittaKitabMedia().pdf || getSittaBookMedia().pdf }, media.pdfPage)} /> : null}
+                  {sharedResources.length ? <View style={{ marginTop: 8, borderTopWidth: 1, borderTopColor: COLORS.border, paddingTop: 8 }}><Text style={[styles.cardHeading, { color: settings.headingColor }]}>له ګډ علمي کتابتون څخه سرچینې</Text>{sharedResources.map(resource => { const linked = (media.sharedResourceIds || []).includes(resource.id); return <TouchableOpacity key={resource.id} onPress={() => toggleSittaHadithSharedResource(selectedSittaBab.id, number, resource.id)} style={{ flexDirection: 'row-reverse', alignItems: 'center', paddingVertical: 6 }}><Ionicons name={linked ? 'checkbox' : 'square-outline'} color={COLORS.gold} size={20} /><Text style={{ color: COLORS.white, marginRight: 8, flex: 1, textAlign: 'right' }}>{resource.title} · {resource.section}</Text></TouchableOpacity>; })}{(media.sharedResourceIds || []).map(id => { const resource = sharedResources.find(row => row.id === id); if (!resource) return null; return <GoldButton key={`open-${id}`} title={resource.kind === 'audio' ? `▶ ${resource.title}` : `▤ ${resource.title}`} secondary onPress={() => resource.kind === 'audio' ? startAudio({ id: resource.id, title: resource.title, audio: resource.uri, section: resource.section }, 0) : openPdf({ id: resource.id, title: resource.title, pdf: resource.uri }, 1)} />; })}</View> : null}
                 </View>
               );
             })}
