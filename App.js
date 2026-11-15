@@ -440,6 +440,8 @@ export default function App() {
 
   const [selectedScholar, setSelectedScholar] = useState('');
   const [selectedScholarSubFolder, setSelectedScholarSubFolder] = useState('');
+  const [openScholarSections, setOpenScholarSections] = useState({});
+  const [openScholarFolders, setOpenScholarFolders] = useState({});
   const [scholarNames, setScholarNames] = useState([]);
   const [scholarTaxonomy, setScholarTaxonomy] = useState({});
   const [scholarTaxonomySection, setScholarTaxonomySection] = useState(SECTIONS[0]);
@@ -1728,8 +1730,9 @@ export default function App() {
       video: formVideo,
       audioStartSeconds: parsedOptionalAudioStart,
       pdfPage: parsedOptionalPdfPage,
-      linkedGeneralMaterialId: formLinkedAudioMaterialId || formLinkedPdfMaterialId || '',
-      linkedAudioMaterialId: formLinkedAudioMaterialId || '',
+      linkedGeneralMaterialId: linkedAudioMaterial?.sourceId || formLinkedPdfMaterialId || '',
+      linkedAudioMaterialId: linkedAudioMaterial?.sourceId || '',
+      linkedAudioTrackId: linkedAudioMaterial?.trackId || '',
       linkedPdfMaterialId: formLinkedPdfMaterialId || '',
       linkedAudioStartSeconds: parsedLinkedAudioStart,
       linkedPdfPage: parsedLinkedPdfPage,
@@ -3665,7 +3668,7 @@ export default function App() {
     setFormPdfPage(item.pdfPage != null ? String(item.pdfPage) : '');
     setFormLinkedGeneralMaterialId(item.linkedGeneralMaterialId || '');
     const legacyLinkedSource = globalItems.find(row => row.id === item.linkedGeneralMaterialId);
-    setFormLinkedAudioMaterialId(item.linkedAudioMaterialId || (legacyLinkedSource && (legacyLinkedSource.audio || legacyLinkedSource.audioTracks?.length) ? item.linkedGeneralMaterialId : ''));
+    setFormLinkedAudioMaterialId(item.linkedAudioTrackId ? `${item.linkedAudioMaterialId}::track::${item.linkedAudioTrackId}` : (item.linkedAudioMaterialId || (legacyLinkedSource && (legacyLinkedSource.audio || legacyLinkedSource.audioTracks?.length) ? item.linkedGeneralMaterialId : '')));
     setFormLinkedPdfMaterialId(item.linkedPdfMaterialId || (legacyLinkedSource?.pdf ? item.linkedGeneralMaterialId : ''));
     setFormLinkedAudioStartSeconds(item.linkedAudioStartSeconds != null ? String(item.linkedAudioStartSeconds) : '');
     setFormLinkedPdfPage(item.linkedPdfPage != null ? String(item.linkedPdfPage) : '');
@@ -3823,7 +3826,18 @@ export default function App() {
   }
 
   function getLessonLinkableAudioMaterials() {
-    return getLessonLinkableGeneralMaterials().filter(row => !!(row.audio || row.audioTracks?.length));
+    return getLessonLinkableGeneralMaterials().flatMap(row => {
+      const tracks = Array.isArray(row.audioTracks) ? row.audioTracks.filter(track => track?.uri) : [];
+      if (tracks.length) return tracks.map((track, index) => ({
+        ...row,
+        id: `${row.id}::track::${track.id || index}`,
+        sourceId: row.id,
+        trackId: track.id || String(index),
+        audioUri: track.uri,
+        displayTitle: `${row.title} · ${track.name || `کلیپ ${index + 1}`}`
+      }));
+      return row.audio ? [{ ...row, sourceId: row.id, audioUri: row.audio, displayTitle: row.title }] : [];
+    });
   }
 
   function getLessonLinkablePdfMaterials() {
@@ -4745,20 +4759,34 @@ export default function App() {
 
         {screen === 'scholar' && (
           <ScrollView contentContainerStyle={styles.pageContent} keyboardShouldPersistTaps="always" keyboardDismissMode="none">
-            <PageHeader
-              title={t("د عالم کتابتون")}
-              subtitle={selectedScholar}
-              onBack={goBack}
-            />
-
+            <PageHeader title={t("د عالم کتابتون")} subtitle={selectedScholar} onBack={goBack} />
             {SECTIONS.map(section => {
+              const sectionKey = `${selectedScholar}::${section}`;
+              const isSectionOpen = !!openScholarSections[sectionKey];
               const count = globalItems.filter(item => item.scholar === selectedScholar && canonicalSection(item.section) === canonicalSection(section)).length;
               const folders = getSectionFolders(section);
               return <View key={section} style={{ marginBottom: 8 }}>
-                <TouchableOpacity style={styles.listCard} onPress={() => { setSelectedSection(section); setSelectedFolder(''); setSelectedFolderParent(''); setSelectedScholarSubFolder(''); setSelectedHomeGroup({ key: `scholar-${section}`, title: section, sections: [section] }); setScreen('scholarSection'); }}>
-                  <Text style={styles.listCardIcon}>▤</Text><View style={styles.flexText}><Text style={[styles.listCardTitle, { color: settings.textColor }]}>{section}</Text><Text style={styles.smallMuted}>{count} درسونه · {folders.length} اصلي فولډرونه</Text></View><Text style={styles.lessonArrow}>‹</Text>
+                <TouchableOpacity style={styles.listCard} onPress={() => setOpenScholarSections(old => ({ ...old, [sectionKey]: !old[sectionKey] }))}>
+                  <Text style={styles.listCardIcon}>▤</Text><View style={styles.flexText}><Text style={[styles.listCardTitle, { color: settings.textColor }]}>{section}</Text><Text style={styles.smallMuted}>{count} درسونه · {folders.length} اصلي فولډرونه</Text></View><Text style={styles.lessonArrow}>{isSectionOpen ? '⌄' : '‹'}</Text>
                 </TouchableOpacity>
-                {folders.map(folder => { const subCount = globalItems.filter(item => item.scholar === selectedScholar && canonicalSection(item.section) === canonicalSection(section) && item.folder === folder.name && !(item.folderParent || '')).length; return <View key={`${section}-${folder.name}`}><TouchableOpacity onPress={() => { setSelectedSection(section); setSelectedFolder(folder.name); setSelectedFolderParent(''); setSelectedScholarSubFolder(''); setScreen('scholarSection'); }} style={{ marginRight: 22, paddingVertical: 7, paddingHorizontal: 12, borderBottomWidth: 1, borderBottomColor: COLORS.border, flexDirection: 'row-reverse' }}><Text style={{ color: COLORS.goldLight, flex: 1, textAlign: 'right' }}>{folder.name}</Text><Text style={styles.smallMuted}>{subCount}</Text></TouchableOpacity>{(folder.children || []).map(child => { const childCount = globalItems.filter(item => item.scholar === selectedScholar && canonicalSection(item.section) === canonicalSection(section) && item.folder === child && item.folderParent === folder.name).length; return <TouchableOpacity key={`${section}-${folder.name}-${child}`} onPress={() => { setSelectedSection(section); setSelectedFolder(child); setSelectedFolderParent(folder.name); setSelectedScholarSubFolder(child); setScreen('scholarSection'); }} style={{ marginRight: 42, paddingVertical: 6, paddingHorizontal: 12, borderBottomWidth: 1, borderBottomColor: COLORS.border, flexDirection: 'row-reverse' }}><Text style={{ color: COLORS.muted, flex: 1, textAlign: 'right' }}>↳ {child}</Text><Text style={styles.smallMuted}>{childCount}</Text></TouchableOpacity>; })}</View>; })}
+                {isSectionOpen ? folders.map(folder => {
+                  const folderKey = `${sectionKey}::${folder.name}`;
+                  const isFolderOpen = !!openScholarFolders[folderKey];
+                  const subCount = globalItems.filter(item => item.scholar === selectedScholar && canonicalSection(item.section) === canonicalSection(section) && item.folder === folder.name && !(item.folderParent || '')).length;
+                  const childCount = globalItems.filter(item => item.scholar === selectedScholar && canonicalSection(item.section) === canonicalSection(section) && item.folderParent === folder.name).length;
+                  return <View key={folderKey}>
+                    <TouchableOpacity onPress={() => setOpenScholarFolders(old => ({ ...old, [folderKey]: !old[folderKey] }))} style={{ marginRight: 18, paddingVertical: 9, paddingHorizontal: 12, borderBottomWidth: 1, borderBottomColor: COLORS.border, flexDirection: 'row-reverse', alignItems: 'center' }}>
+                      <Text style={{ color: COLORS.goldLight, flex: 1, textAlign: 'right' }}>{folder.name}</Text><Text style={styles.smallMuted}>{subCount + childCount}</Text><Text style={{ color: COLORS.gold, marginRight: 8 }}>{isFolderOpen ? '⌄' : '‹'}</Text>
+                    </TouchableOpacity>
+                    {isFolderOpen ? <>
+                      <TouchableOpacity onPress={() => { setSelectedSection(section); setSelectedFolder(folder.name); setSelectedFolderParent(''); setSelectedScholarSubFolder(''); setSelectedHomeGroup({ key: `scholar-${section}`, title: folder.name, sections: [section] }); setScreen('scholarSection'); }} style={{ marginRight: 34, paddingVertical: 7, paddingHorizontal: 12, flexDirection: 'row-reverse' }}><Text style={{ color: COLORS.white, flex: 1, textAlign: 'right' }}>د همدې فولډر درسونه</Text><Text style={styles.smallMuted}>{subCount}</Text></TouchableOpacity>
+                      {(folder.children || []).map(child => {
+                        const childRows = globalItems.filter(item => item.scholar === selectedScholar && canonicalSection(item.section) === canonicalSection(section) && item.folder === child && item.folderParent === folder.name);
+                        return <TouchableOpacity key={`${folderKey}::${child}`} onPress={() => { setSelectedSection(section); setSelectedFolder(child); setSelectedFolderParent(folder.name); setSelectedScholarSubFolder(child); setSelectedHomeGroup({ key: `scholar-${section}-${child}`, title: child, sections: [section] }); setScreen('scholarSection'); }} style={{ marginRight: 48, paddingVertical: 7, paddingHorizontal: 12, borderBottomWidth: 1, borderBottomColor: COLORS.border, flexDirection: 'row-reverse' }}><Text style={{ color: COLORS.muted, flex: 1, textAlign: 'right' }}>↳ {child}</Text><Text style={styles.smallMuted}>{childRows.length}</Text></TouchableOpacity>;
+                      })}
+                    </> : null}
+                  </View>;
+                }) : null}
               </View>;
             })}
           </ScrollView>
@@ -5389,8 +5417,8 @@ export default function App() {
                     <TouchableOpacity key={`audio-${row.id}`} onPress={() => setFormLinkedAudioMaterialId(formLinkedAudioMaterialId === row.id ? '' : row.id)} style={{ flexDirection: 'row-reverse', alignItems: 'center', paddingVertical: 7 }}>
                       <Ionicons name={formLinkedAudioMaterialId === row.id ? 'radio-button-on' : 'radio-button-off'} size={20} color={COLORS.gold} />
                       <View style={{ marginRight: 8, flex: 1 }}>
-                        <Text style={{ color: COLORS.white, textAlign: 'right' }}>{row.title}</Text>
-                        <Text style={[styles.smallMuted, { textAlign: 'right' }]}>{row._lessonSourceScope}</Text>
+                        <Text style={{ color: COLORS.white, textAlign: 'right' }}>{row.displayTitle || row.title}</Text>
+                        <Text style={[styles.smallMuted, { textAlign: 'right' }]}>{row._lessonSourceScope}{row.trackId ? ' · جلا آډیو کلیپ' : ''}</Text>
                       </View>
                     </TouchableOpacity>
                   ))}
@@ -5406,8 +5434,8 @@ export default function App() {
                     <TouchableOpacity key={`pdf-${row.id}`} onPress={() => setFormLinkedPdfMaterialId(formLinkedPdfMaterialId === row.id ? '' : row.id)} style={{ flexDirection: 'row-reverse', alignItems: 'center', paddingVertical: 7 }}>
                       <Ionicons name={formLinkedPdfMaterialId === row.id ? 'radio-button-on' : 'radio-button-off'} size={20} color={COLORS.gold} />
                       <View style={{ marginRight: 8, flex: 1 }}>
-                        <Text style={{ color: COLORS.white, textAlign: 'right' }}>{row.title}</Text>
-                        <Text style={[styles.smallMuted, { textAlign: 'right' }]}>{row._lessonSourceScope}</Text>
+                        <Text style={{ color: COLORS.white, textAlign: 'right' }}>{row.displayTitle || row.title}</Text>
+                        <Text style={[styles.smallMuted, { textAlign: 'right' }]}>{row._lessonSourceScope}{row.trackId ? ' · جلا آډیو کلیپ' : ''}</Text>
                       </View>
                     </TouchableOpacity>
                   ))}
@@ -5546,14 +5574,15 @@ export default function App() {
               const audioSourceId = selectedItem.linkedAudioMaterialId || selectedItem.linkedGeneralMaterialId || '';
               const pdfSourceId = selectedItem.linkedPdfMaterialId || selectedItem.linkedGeneralMaterialId || '';
               const audioSource = audioSourceId ? globalItems.find(row => row.id === audioSourceId) : null;
+              const selectedAudioTrack = audioSource?.audioTracks?.find(track => track.id === selectedItem.linkedAudioTrackId) || null;
               const pdfSource = pdfSourceId ? globalItems.find(row => row.id === pdfSourceId) : null;
               return (
                 <View style={styles.formCard}>
                   <Text style={[styles.cardHeading, { color: settings.headingColor }]}>د درس تړلي عمومي مواد</Text>
                   {!!audioSourceId && audioSource && (
                     <View style={{ marginBottom: 10 }}>
-                      <Text style={styles.smallMuted}>♫ آډیو: {audioSource.title} · {audioSource.generalScope === 'subfolder' ? 'فرعي فولډر' : 'اصلي فولډر'}</Text>
-                      <GoldButton title="♫ ټاکلی آډیو واوره" onPress={() => startAudio(audioSource, selectedItem.linkedAudioStartSeconds != null ? selectedItem.linkedAudioStartSeconds * 1000 : (audioSource.audioStartSeconds != null ? audioSource.audioStartSeconds * 1000 : 0))} />
+                      <Text style={styles.smallMuted}>♫ آډیو: {audioSource.title}{selectedAudioTrack ? ` · ${selectedAudioTrack.name || 'ټاکلی کلیپ'}` : ''} · {audioSource.generalScope === 'subfolder' ? 'فرعي فولډر' : 'اصلي فولډر'}</Text>
+                      <GoldButton title="♫ ټاکلی آډیو واوره" onPress={() => startAudio({ ...audioSource, audio: selectedAudioTrack?.uri || audioSource.audio }, selectedItem.linkedAudioStartSeconds != null ? selectedItem.linkedAudioStartSeconds * 1000 : (audioSource.audioStartSeconds != null ? audioSource.audioStartSeconds * 1000 : 0))} />
                     </View>
                   )}
                   {!!audioSourceId && !audioSource && <Text style={styles.smallMuted}>د آډیو ټاکل شوې سرچینه ونه موندل شوه.</Text>}
