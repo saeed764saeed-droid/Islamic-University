@@ -1286,9 +1286,56 @@ export default function App() {
   }
 
   async function saveRenamedMediaFile() {
-    if (!fileNameEdit || !selectedItem?.id) return;
+    if (!fileNameEdit) return;
     const newName = String(fileNameEdit.value || '').trim();
     if (!newName) { Alert.alert('خبرتیا', 'د فایل نوی نوم ولیکئ.'); return; }
+
+    // د کتب تسعه، مشکاة، باب او حدیث فایلونو لپاره د ښکاره کېدونکي نوم اصلاح.
+    // اصلي URI، تخنیکي نوم او فایل نه بدلېږي.
+    if (fileNameEdit.type === 'sittaMedia') {
+      const bookId = selectedSittaBook?.id;
+      if (!bookId) return;
+      const bookRows = { ...(sittaData[bookId] || {}) };
+      const kind = fileNameEdit.kind;
+      const updateRecord = record => {
+        const current = getSittaMediaFiles(record, kind);
+        const files = current.map((file, index) => {
+          const key = file.id || String(index);
+          if (key !== fileNameEdit.fileId) return file;
+          return { ...file, originalName: file.originalName || file.name || `${kind} ${index + 1}`, name: newName, displayName: newName };
+        });
+        return { ...record, [`${kind}Files`]: files, [kind]: files[0]?.uri || '' };
+      };
+      if (fileNameEdit.level === 'kitab') {
+        const mediaRows = { ...(bookRows.__kitabMedia || {}) };
+        mediaRows[selectedSittaKitab] = updateRecord(mediaRows[selectedSittaKitab] || {});
+        bookRows.__kitabMedia = mediaRows;
+      } else {
+        const babRows = (bookRows[selectedSittaKitab] || []).map(bab => {
+          if (bab.id !== fileNameEdit.targetId) return bab;
+          if (fileNameEdit.level === 'bab') return updateRecord(bab);
+          const hadithNumbers = (bab.hadithNumbers || []).map(row => {
+            const oldNumber = typeof row === 'object' ? row.number : row;
+            return String(oldNumber) === String(fileNameEdit.number)
+              ? updateRecord(typeof row === 'object' ? row : { number: oldNumber })
+              : row;
+          });
+          return { ...bab, hadithNumbers };
+        });
+        bookRows[selectedSittaKitab] = babRows;
+      }
+      const updatedData = { ...sittaData, [bookId]: bookRows };
+      await saveSittaData(updatedData);
+      if (fileNameEdit.level !== 'kitab') {
+        const updatedBab = (bookRows[selectedSittaKitab] || []).find(row => row.id === fileNameEdit.targetId);
+        if (updatedBab?.id === selectedSittaBab?.id) setSelectedSittaBab(updatedBab);
+      }
+      setFileNameEdit(null);
+      Alert.alert('بریالی شو', 'د فایل ښکاره کېدونکی نوم بدل شو؛ اصلي فایل او لاره یې خوندي پاتې شول.');
+      return;
+    }
+
+    if (!selectedItem?.id) return;
     const updatedItem = { ...selectedItem };
     if (fileNameEdit.type === 'audio') {
       updatedItem.audioTracks = (selectedItem.audioTracks || []).map((track, index) => {
@@ -3301,7 +3348,7 @@ export default function App() {
       const renameRecord = record => {
         const key = `${item._sittaKind}Files`;
         const list = Array.isArray(record[key]) && record[key].length ? record[key] : getSittaMediaFiles(record, item._sittaKind);
-        return { ...record, [key]: list.map(file => file.id === item._sittaFile?.id ? { ...file, name: value } : file) };
+        return { ...record, [key]: list.map(file => file.id === item._sittaFile?.id ? { ...file, originalName: file.originalName || file.name || '', name: value, displayName: value } : file) };
       };
       if (item._sittaLevel === 'kitab') {
         const media = { ...(bookRows.__kitabMedia || {}) };
@@ -3356,7 +3403,7 @@ export default function App() {
   }
 
   async function deleteSearchResult(item) {
-    const kind = item._resultType === 'lesson' ? 'درس' : item._resultType === 'note' ? 'نوټ' : item._resultType === 'dhikr' ? 'ذکر' : item._resultSubtype === 'chapter' ? 'څپرکی' : item._resultSubtype === 'lesson' ? 'د کتاب درس' : 'کتاب';
+    const kind = item._resultType === 'sittaFile' ? 'د فایل' : item._resultType === 'sitta' && item._sittaLevel === 'bab' ? 'باب' : item._resultType === 'sitta' && item._sittaLevel === 'hadith' ? 'حدیث' : item._resultType === 'lesson' ? 'درس' : item._resultType === 'note' ? 'نوټ' : item._resultType === 'dhikr' ? 'ذکر' : item._resultSubtype === 'chapter' ? 'څپرکی' : item._resultSubtype === 'lesson' ? 'د کتاب درس' : 'کتاب';
     Alert.alert(`${kind} حذف`, `ایا «${item.title}» حذف کول غواړئ؟`, [
       { text: 'نه', style: 'cancel' },
       { text: 'هو، حذف یې کړه', style: 'destructive', onPress: async () => {
@@ -3376,6 +3423,36 @@ export default function App() {
             return { ...book, chapters: (book.chapters || []).map(ch => !sameChapter(ch) ? ch : { ...ch, lessons: (ch.lessons || []).filter(ls => !sameLesson(ls)) }) };
           }).filter(Boolean);
           await saveBooks({ ...books, [group]: updated });
+        } else if (item._resultType === 'sittaFile' || item._resultType === 'sitta') {
+          const bookId = item._sittaBook?.id;
+          const bookRows = { ...(sittaData[bookId] || {}) };
+          if (item._resultType === 'sittaFile') {
+            const kindKey = `${item._sittaKind}Files`;
+            const removeFromRecord = record => {
+              const current = Array.isArray(record[kindKey]) && record[kindKey].length ? record[kindKey] : getSittaMediaFiles(record, item._sittaKind);
+              const remaining = current.filter(file => file.id !== item._sittaFile?.id);
+              return { ...record, [kindKey]: remaining, [item._sittaKind]: remaining[0]?.uri || '' };
+            };
+            if (item._sittaLevel === 'kitab') {
+              const media = { ...(bookRows.__kitabMedia || {}) };
+              media[item._sittaKitab] = removeFromRecord(media[item._sittaKitab] || {});
+              bookRows.__kitabMedia = media;
+            } else {
+              bookRows[item._sittaKitab] = (bookRows[item._sittaKitab] || []).map(bab => {
+                if (bab.id !== item._sittaBab?.id) return bab;
+                if (item._sittaLevel === 'bab') return removeFromRecord(bab);
+                return { ...bab, hadithNumbers: (bab.hadithNumbers || []).map(row => {
+                  const n = String(typeof row === 'object' ? row.number : row);
+                  return n === String(item._sittaHadithNumber) ? removeFromRecord(typeof row === 'object' ? row : { number: n }) : row;
+                }) };
+              });
+            }
+          } else if (item._sittaLevel === 'bab') {
+            bookRows[item._sittaKitab] = (bookRows[item._sittaKitab] || []).filter(bab => bab.id !== item._sittaBab?.id);
+          } else if (item._sittaLevel === 'hadith') {
+            bookRows[item._sittaKitab] = (bookRows[item._sittaKitab] || []).map(bab => bab.id !== item._sittaBab?.id ? bab : { ...bab, hadithNumbers: (bab.hadithNumbers || []).filter(row => String(typeof row === 'object' ? row.number : row) !== String(item._sittaHadithNumber)) });
+          }
+          await saveSittaData({ ...sittaData, [bookId]: bookRows });
         }
       }}
     ]);
@@ -5784,6 +5861,7 @@ export default function App() {
         {screen === 'sittaBooks' && (
           <ScrollView contentContainerStyle={styles.pageContent} keyboardShouldPersistTaps="always" keyboardDismissMode="none">
             <PageHeader title={sittaCollection === 'mishkat' ? 'مشكاة المصابيح' : 'کتب تسعه'} subtitle={sittaCollection === 'mishkat' ? 'د مشکاة المصابيح کتابونه' : 'نه مشهور حدیثي ټولګې'} onBack={goBack} />
+            {fileNameEdit?.type === 'sittaMedia' ? <View style={styles.formCard}><Text style={[styles.cardHeading, { color: settings.headingColor }]}>د فایل ښکاره کېدونکی نوم اصلاح کړئ</Text><Field textColor={settings.textColor} label="نوی نوم" value={fileNameEdit.value} onChangeText={value => setFileNameEdit(previous => ({ ...previous, value }))} placeholder="سم او لنډ نوم ولیکئ" /><View style={{ flexDirection: 'row-reverse', gap: 8 }}><GoldButton title="نوم خوندي کړه" onPress={saveRenamedMediaFile} /><GoldButton title="لغوه" secondary onPress={() => setFileNameEdit(null)} /></View></View> : null}
             {(sittaCollection === 'mishkat' ? [MISHKAT_BOOK] : SIHAH_SITTA).map(book => <TouchableOpacity key={book.id} style={styles.listCard} onPress={() => { setSelectedSittaBook(book); setScreen('sittaKitabs'); }}><View style={styles.flexText}><Text style={[styles.listCardTitle, { color: settings.textColor }]}>{book.name}</Text><Text style={styles.smallMuted}>{book.author} · {(sittaCollection === 'mishkat' ? MISHKAT_KITAB_TITLES : (SIHAH_SITTA_KITAB_TITLES[book.id] || [])).length} کتابونه</Text></View><Text style={styles.lessonArrow}>‹</Text></TouchableOpacity>)}
           </ScrollView>
         )}
@@ -5802,8 +5880,8 @@ export default function App() {
               <Text style={[styles.cardHeading, { color: settings.headingColor }]}>د ټول کتاب عمومي آډیو او PDF</Text>
               <GoldButton title="♫ د کتاب آډیو فایلونه وټاکئ / نور زیات کړئ" secondary onPress={() => pickAndSaveSittaMedia('kitab', null, null, 'audio')} />
               <GoldButton title="▤ د کتاب PDF فایلونه وټاکئ / نور زیات کړئ" secondary onPress={() => pickAndSaveSittaMedia('kitab', null, null, 'pdf')} />
-              {getSittaMediaFiles(getSittaKitabMedia(), 'audio').map((file, index) => <View key={file.id || `ka-${index}`} style={{ marginTop: 6 }}><Text style={styles.smallMuted}>{file.name || `آډیو ${index + 1}`} · {formatFileSize(file.size)}{file.durationSeconds ? ` · ${formatDuration(file.durationSeconds * 1000)}` : ''}</Text><GoldButton title={`▶ آډیو ${index + 1} واوره`} onPress={() => openSittaMediaFile(file, 'audio', selectedSittaKitab, `kitab-${selectedSittaKitab}`)} /><View style={{ flexDirection: 'row-reverse', gap: 8 }}><GoldButton title="بدلول" secondary onPress={() => pickAndSaveSittaMedia('kitab', null, null, 'audio', file.id)} /><GoldButton title="حذف" secondary onPress={() => Alert.alert('د فایل حذف', 'دا آډیو له دې کتاب څخه لرې شي؟', [{ text: 'نه', style: 'cancel' }, { text: 'هو، حذف', style: 'destructive', onPress: () => removeSittaMediaFile('kitab', null, null, 'audio', file.id) }])} /></View></View>)}
-              {getSittaMediaFiles(getSittaKitabMedia(), 'pdf').map((file, index) => <View key={file.id || `kp-${index}`} style={{ marginTop: 6 }}><Text style={styles.smallMuted}>{file.name || `PDF ${index + 1}`} · {formatFileSize(file.size)}</Text><GoldButton title={`▤ PDF ${index + 1} ولوله`} secondary onPress={() => openSittaMediaFile(file, 'pdf', selectedSittaKitab, `kitab-${selectedSittaKitab}`)} /><View style={{ flexDirection: 'row-reverse', gap: 8 }}><GoldButton title="بدلول" secondary onPress={() => pickAndSaveSittaMedia('kitab', null, null, 'pdf', file.id)} /><GoldButton title="حذف" secondary onPress={() => Alert.alert('د فایل حذف', 'دا PDF له دې کتاب څخه لرې شي؟', [{ text: 'نه', style: 'cancel' }, { text: 'هو، حذف', style: 'destructive', onPress: () => removeSittaMediaFile('kitab', null, null, 'pdf', file.id) }])} /></View></View>)}
+              {getSittaMediaFiles(getSittaKitabMedia(), 'audio').map((file, index) => <View key={file.id || `ka-${index}`} style={{ marginTop: 6 }}><Text style={styles.smallMuted}>{file.name || `آډیو ${index + 1}`} · {formatFileSize(file.size)}{file.durationSeconds ? ` · ${formatDuration(file.durationSeconds * 1000)}` : ''}</Text><GoldButton title={`▶ آډیو ${index + 1} واوره`} onPress={() => openSittaMediaFile(file, 'audio', selectedSittaKitab, `kitab-${selectedSittaKitab}`)} /><View style={{ flexDirection: 'row-reverse', gap: 8 }}><GoldButton title="✎ نوم بدلول" secondary onPress={() => setFileNameEdit({ type: 'sittaMedia', level: 'kitab', kind: 'audio', fileId: file.id, value: file.name || '' })} /><GoldButton title="بدلول" secondary onPress={() => pickAndSaveSittaMedia('kitab', null, null, 'audio', file.id)} /><GoldButton title="حذف" secondary onPress={() => Alert.alert('د فایل حذف', 'دا آډیو له دې کتاب څخه لرې شي؟', [{ text: 'نه', style: 'cancel' }, { text: 'هو، حذف', style: 'destructive', onPress: () => removeSittaMediaFile('kitab', null, null, 'audio', file.id) }])} /></View></View>)}
+              {getSittaMediaFiles(getSittaKitabMedia(), 'pdf').map((file, index) => <View key={file.id || `kp-${index}`} style={{ marginTop: 6 }}><Text style={styles.smallMuted}>{file.name || `PDF ${index + 1}`} · {formatFileSize(file.size)}</Text><GoldButton title={`▤ PDF ${index + 1} ولوله`} secondary onPress={() => openSittaMediaFile(file, 'pdf', selectedSittaKitab, `kitab-${selectedSittaKitab}`)} /><View style={{ flexDirection: 'row-reverse', gap: 8 }}><GoldButton title="✎ نوم بدلول" secondary onPress={() => setFileNameEdit({ type: 'sittaMedia', level: 'kitab', kind: 'pdf', fileId: file.id, value: file.name || '' })} /><GoldButton title="بدلول" secondary onPress={() => pickAndSaveSittaMedia('kitab', null, null, 'pdf', file.id)} /><GoldButton title="حذف" secondary onPress={() => Alert.alert('د فایل حذف', 'دا PDF له دې کتاب څخه لرې شي؟', [{ text: 'نه', style: 'cancel' }, { text: 'هو، حذف', style: 'destructive', onPress: () => removeSittaMediaFile('kitab', null, null, 'pdf', file.id) }])} /></View></View>)}
             </View>
             <View style={styles.formCard}><Text style={[styles.cardHeading, { color: settings.headingColor }]}>خپل باب فولډر جوړ کړئ</Text><Field textColor={settings.textColor} label="د باب نوم" value={sittaBabName} onChangeText={setSittaBabName} placeholder="د باب نوم ولیکئ" /><GoldButton title="＋ باب اضافه کړئ" onPress={addSittaBab} /></View>
             {(sittaData?.[selectedSittaBook.id]?.[selectedSittaKitab] || []).map(bab => <TouchableOpacity key={bab.id} style={styles.listCard} onPress={() => { setSelectedSittaBab(bab); setSittaHadithNumber(''); setSittaHadithAudioTime(''); setSittaHadithPdfPage(''); setScreen('sittaBabDetails'); }}><View style={styles.flexText}><Text style={[styles.listCardTitle, { color: settings.textColor }]}>{bab.name}</Text><Text style={styles.smallMuted}>د حدیثونو شمېرې: {(bab.hadithNumbers || []).length}</Text></View><Text style={styles.lessonArrow}>‹</Text></TouchableOpacity>)}
@@ -5813,12 +5891,13 @@ export default function App() {
         {screen === 'sittaBabDetails' && selectedSittaBab && (
           <ScrollView contentContainerStyle={styles.pageContent} keyboardShouldPersistTaps="always" keyboardDismissMode="none">
             <PageHeader title={selectedSittaBab.name} subtitle={`${selectedSittaKitab} · ${selectedSittaBook?.name || ''}`} onBack={goBack} />
+            {fileNameEdit?.type === 'sittaMedia' ? <View style={styles.formCard}><Text style={[styles.cardHeading, { color: settings.headingColor }]}>د فایل ښکاره کېدونکی نوم اصلاح کړئ</Text><Field textColor={settings.textColor} label="نوی نوم" value={fileNameEdit.value} onChangeText={value => setFileNameEdit(previous => ({ ...previous, value }))} placeholder="سم او لنډ نوم ولیکئ" /><View style={{ flexDirection: 'row-reverse', gap: 8 }}><GoldButton title="نوم خوندي کړه" onPress={saveRenamedMediaFile} /><GoldButton title="لغوه" secondary onPress={() => setFileNameEdit(null)} /></View></View> : null}
             <View style={styles.formCard}>
               <Text style={[styles.cardHeading, { color: settings.headingColor }]}>د دې باب عمومي آډیو او PDF</Text>
               <GoldButton title="♫ د باب آډیو فایلونه وټاکئ / نور زیات کړئ" secondary onPress={() => pickAndSaveSittaMedia('bab', selectedSittaBab.id, null, 'audio')} />
               <GoldButton title="▤ د باب PDF فایلونه وټاکئ / نور زیات کړئ" secondary onPress={() => pickAndSaveSittaMedia('bab', selectedSittaBab.id, null, 'pdf')} />
-              {getSittaMediaFiles(selectedSittaBab, 'audio').map((file, index) => <View key={file.id || `ba-${index}`} style={{ marginTop: 6 }}><Text style={styles.smallMuted}>{file.name || `آډیو ${index + 1}`} · {formatFileSize(file.size)}{file.durationSeconds ? ` · ${formatDuration(file.durationSeconds * 1000)}` : ''}</Text><GoldButton title={`▶ د باب آډیو ${index + 1} واوره`} onPress={() => openSittaMediaFile(file, 'audio', selectedSittaBab.name, `bab-${selectedSittaBab.id}`)} /><View style={{ flexDirection: 'row-reverse', gap: 8 }}><GoldButton title="بدلول" secondary onPress={() => pickAndSaveSittaMedia('bab', selectedSittaBab.id, null, 'audio', file.id)} /><GoldButton title="حذف" secondary onPress={() => Alert.alert('د فایل حذف', 'دا آډیو له دې باب څخه لرې شي؟', [{ text: 'نه', style: 'cancel' }, { text: 'هو، حذف', style: 'destructive', onPress: () => removeSittaMediaFile('bab', selectedSittaBab.id, null, 'audio', file.id) }])} /></View></View>)}
-              {getSittaMediaFiles(selectedSittaBab, 'pdf').map((file, index) => <View key={file.id || `bp-${index}`} style={{ marginTop: 6 }}><Text style={styles.smallMuted}>{file.name || `PDF ${index + 1}`} · {formatFileSize(file.size)}</Text><GoldButton title={`▤ د باب PDF ${index + 1} ولوله`} secondary onPress={() => openSittaMediaFile(file, 'pdf', selectedSittaBab.name, `bab-${selectedSittaBab.id}`)} /><View style={{ flexDirection: 'row-reverse', gap: 8 }}><GoldButton title="بدلول" secondary onPress={() => pickAndSaveSittaMedia('bab', selectedSittaBab.id, null, 'pdf', file.id)} /><GoldButton title="حذف" secondary onPress={() => Alert.alert('د فایل حذف', 'دا PDF له دې باب څخه لرې شي؟', [{ text: 'نه', style: 'cancel' }, { text: 'هو، حذف', style: 'destructive', onPress: () => removeSittaMediaFile('bab', selectedSittaBab.id, null, 'pdf', file.id) }])} /></View></View>)}
+              {getSittaMediaFiles(selectedSittaBab, 'audio').map((file, index) => <View key={file.id || `ba-${index}`} style={{ marginTop: 6 }}><Text style={styles.smallMuted}>{file.name || `آډیو ${index + 1}`} · {formatFileSize(file.size)}{file.durationSeconds ? ` · ${formatDuration(file.durationSeconds * 1000)}` : ''}</Text><GoldButton title={`▶ د باب آډیو ${index + 1} واوره`} onPress={() => openSittaMediaFile(file, 'audio', selectedSittaBab.name, `bab-${selectedSittaBab.id}`)} /><View style={{ flexDirection: 'row-reverse', gap: 8 }}><GoldButton title="✎ نوم بدلول" secondary onPress={() => setFileNameEdit({ type: 'sittaMedia', level: 'bab', targetId: selectedSittaBab.id, kind: 'audio', fileId: file.id, value: file.name || '' })} /><GoldButton title="بدلول" secondary onPress={() => pickAndSaveSittaMedia('bab', selectedSittaBab.id, null, 'audio', file.id)} /><GoldButton title="حذف" secondary onPress={() => Alert.alert('د فایل حذف', 'دا آډیو له دې باب څخه لرې شي؟', [{ text: 'نه', style: 'cancel' }, { text: 'هو، حذف', style: 'destructive', onPress: () => removeSittaMediaFile('bab', selectedSittaBab.id, null, 'audio', file.id) }])} /></View></View>)}
+              {getSittaMediaFiles(selectedSittaBab, 'pdf').map((file, index) => <View key={file.id || `bp-${index}`} style={{ marginTop: 6 }}><Text style={styles.smallMuted}>{file.name || `PDF ${index + 1}`} · {formatFileSize(file.size)}</Text><GoldButton title={`▤ د باب PDF ${index + 1} ولوله`} secondary onPress={() => openSittaMediaFile(file, 'pdf', selectedSittaBab.name, `bab-${selectedSittaBab.id}`)} /><View style={{ flexDirection: 'row-reverse', gap: 8 }}><GoldButton title="✎ نوم بدلول" secondary onPress={() => setFileNameEdit({ type: 'sittaMedia', level: 'bab', targetId: selectedSittaBab.id, kind: 'pdf', fileId: file.id, value: file.name || '' })} /><GoldButton title="بدلول" secondary onPress={() => pickAndSaveSittaMedia('bab', selectedSittaBab.id, null, 'pdf', file.id)} /><GoldButton title="حذف" secondary onPress={() => Alert.alert('د فایل حذف', 'دا PDF له دې باب څخه لرې شي؟', [{ text: 'نه', style: 'cancel' }, { text: 'هو، حذف', style: 'destructive', onPress: () => removeSittaMediaFile('bab', selectedSittaBab.id, null, 'pdf', file.id) }])} /></View></View>)}
               <Text style={styles.smallMuted}>د آډیو او PDF فایلونو د زیاتولو لپاره پورته ثبت تڼۍ بیا وکاروئ؛ پخواني فایلونه به نه حذف کېږي.</Text>
             </View>
             <View style={styles.formCard}><Text style={[styles.cardHeading, { color: settings.headingColor }]}>د حدیث شمېره ثبت کړئ</Text><Field textColor={settings.textColor} label="د حدیث شمېره" value={sittaHadithNumber} onChangeText={setSittaHadithNumber} placeholder="یوازې شمېره" keyboardType="number-pad" /><Field textColor={settings.textColor} label="په عمومي آډیو کې د حدیث د پیل وخت (اختیاري mm:ss)" value={sittaHadithAudioTime} onChangeText={setSittaHadithAudioTime} placeholder="12:35" /><Field textColor={settings.textColor} label="په عمومي PDF کې د حدیث مخ (اختیاري)" value={sittaHadithPdfPage} onChangeText={setSittaHadithPdfPage} placeholder="25" keyboardType="number-pad" /><GoldButton title="＋ شمېره اضافه کړئ" onPress={addSittaHadithNumber} /></View>
@@ -5830,8 +5909,8 @@ export default function App() {
                   <Text style={[styles.listCardTitle, { color: settings.textColor }]}>حدیث شمېره: {number}</Text>
                   <GoldButton title="♫ د حدیث آډیو فایلونه وټاکئ / نور زیات کړئ" secondary onPress={() => pickAndSaveSittaMedia('hadith', selectedSittaBab.id, number, 'audio')} />
                   <GoldButton title="▤ د حدیث PDF فایلونه وټاکئ / نور زیات کړئ" secondary onPress={() => pickAndSaveSittaMedia('hadith', selectedSittaBab.id, number, 'pdf')} />
-                  {getSittaMediaFiles(media, 'audio').map((file, fileIndex) => <View key={file.id || `ha-${fileIndex}`}><Text style={styles.smallMuted}>{file.name || `آډیو ${fileIndex + 1}`} · {formatFileSize(file.size)}{file.durationSeconds ? ` · ${formatDuration(file.durationSeconds * 1000)}` : ''}</Text><GoldButton title={`▶ د حدیث آډیو ${fileIndex + 1} واوره`} onPress={() => openSittaMediaFile(file, 'audio', `حدیث ${number}`, `hadith-${selectedSittaBab.id}-${number}`)} /><View style={{ flexDirection: 'row-reverse', gap: 8 }}><GoldButton title="بدلول" secondary onPress={() => pickAndSaveSittaMedia('hadith', selectedSittaBab.id, number, 'audio', file.id)} /><GoldButton title="حذف" secondary onPress={() => Alert.alert('د فایل حذف', 'دا آډیو له دې حدیث څخه لرې شي؟', [{ text: 'نه', style: 'cancel' }, { text: 'هو، حذف', style: 'destructive', onPress: () => removeSittaMediaFile('hadith', selectedSittaBab.id, number, 'audio', file.id) }])} /></View></View>)}
-                  {getSittaMediaFiles(media, 'pdf').map((file, fileIndex) => <View key={file.id || `hp-${fileIndex}`}><Text style={styles.smallMuted}>{file.name || `PDF ${fileIndex + 1}`} · {formatFileSize(file.size)}</Text><GoldButton title={`▤ د حدیث PDF ${fileIndex + 1} ولوله`} secondary onPress={() => openSittaMediaFile(file, 'pdf', `حدیث ${number}`, `hadith-${selectedSittaBab.id}-${number}`)} /><View style={{ flexDirection: 'row-reverse', gap: 8 }}><GoldButton title="بدلول" secondary onPress={() => pickAndSaveSittaMedia('hadith', selectedSittaBab.id, number, 'pdf', file.id)} /><GoldButton title="حذف" secondary onPress={() => Alert.alert('د فایل حذف', 'دا PDF له دې حدیث څخه لرې شي؟', [{ text: 'نه', style: 'cancel' }, { text: 'هو، حذف', style: 'destructive', onPress: () => removeSittaMediaFile('hadith', selectedSittaBab.id, number, 'pdf', file.id) }])} /></View></View>)}
+                  {getSittaMediaFiles(media, 'audio').map((file, fileIndex) => <View key={file.id || `ha-${fileIndex}`}><Text style={styles.smallMuted}>{file.name || `آډیو ${fileIndex + 1}`} · {formatFileSize(file.size)}{file.durationSeconds ? ` · ${formatDuration(file.durationSeconds * 1000)}` : ''}</Text><GoldButton title={`▶ د حدیث آډیو ${fileIndex + 1} واوره`} onPress={() => openSittaMediaFile(file, 'audio', `حدیث ${number}`, `hadith-${selectedSittaBab.id}-${number}`)} /><View style={{ flexDirection: 'row-reverse', gap: 8 }}><GoldButton title="✎ نوم بدلول" secondary onPress={() => setFileNameEdit({ type: 'sittaMedia', level: 'hadith', targetId: selectedSittaBab.id, number, kind: 'audio', fileId: file.id, value: file.name || '' })} /><GoldButton title="بدلول" secondary onPress={() => pickAndSaveSittaMedia('hadith', selectedSittaBab.id, number, 'audio', file.id)} /><GoldButton title="حذف" secondary onPress={() => Alert.alert('د فایل حذف', 'دا آډیو له دې حدیث څخه لرې شي؟', [{ text: 'نه', style: 'cancel' }, { text: 'هو، حذف', style: 'destructive', onPress: () => removeSittaMediaFile('hadith', selectedSittaBab.id, number, 'audio', file.id) }])} /></View></View>)}
+                  {getSittaMediaFiles(media, 'pdf').map((file, fileIndex) => <View key={file.id || `hp-${fileIndex}`}><Text style={styles.smallMuted}>{file.name || `PDF ${fileIndex + 1}`} · {formatFileSize(file.size)}</Text><GoldButton title={`▤ د حدیث PDF ${fileIndex + 1} ولوله`} secondary onPress={() => openSittaMediaFile(file, 'pdf', `حدیث ${number}`, `hadith-${selectedSittaBab.id}-${number}`)} /><View style={{ flexDirection: 'row-reverse', gap: 8 }}><GoldButton title="✎ نوم بدلول" secondary onPress={() => setFileNameEdit({ type: 'sittaMedia', level: 'hadith', targetId: selectedSittaBab.id, number, kind: 'pdf', fileId: file.id, value: file.name || '' })} /><GoldButton title="بدلول" secondary onPress={() => pickAndSaveSittaMedia('hadith', selectedSittaBab.id, number, 'pdf', file.id)} /><GoldButton title="حذف" secondary onPress={() => Alert.alert('د فایل حذف', 'دا PDF له دې حدیث څخه لرې شي؟', [{ text: 'نه', style: 'cancel' }, { text: 'هو، حذف', style: 'destructive', onPress: () => removeSittaMediaFile('hadith', selectedSittaBab.id, number, 'pdf', file.id) }])} /></View></View>)}
                   <Text style={styles.smallMuted}>د دې حدیث لپاره هم څو آډیو او څو PDF فایلونه ثبتولای شئ.</Text>
                   {(selectedSittaBab.audio || getSittaKitabMedia().audio) && Number.isFinite(media.audioStartSeconds) ? <GoldButton title="▶ له عمومي آډیو څخه د دې حدیث ځای واوره" onPress={() => startAudio({ id: `sitta-general-audio-${selectedSittaBab.id}`, title: `${selectedSittaKitab} – حدیث ${number}`, audio: selectedSittaBab.audio || getSittaKitabMedia().audio, scholar: '', section: selectedSittaBook.name }, media.audioStartSeconds * 1000)} /> : null}
                   {(selectedSittaBab.pdf || getSittaKitabMedia().pdf) && media.pdfPage ? <GoldButton title="▤ په عمومي PDF کې د حدیث مخ پرانیزه" secondary onPress={() => openPdf({ id: `sitta-general-pdf-${selectedSittaBab.id}`, title: `${selectedSittaKitab} – حدیث ${number}`, pdf: selectedSittaBab.pdf || getSittaKitabMedia().pdf }, media.pdfPage)} /> : null}
@@ -6666,7 +6745,7 @@ export default function App() {
                     </TouchableOpacity>
                     {canInlineEdit ? <TouchableOpacity onPress={() => { setSearchEditingKey(searchEditingKey === editKey ? '' : editKey); setSearchEditValue(item._resultType === 'sitta' && item._sittaLevel === 'hadith' ? String(item._sittaHadithNumber || '') : item.title || ''); }} style={{ padding: 8 }} accessibilityLabel="اصلاح"><Ionicons name="create-outline" size={20} color={COLORS.gold} /></TouchableOpacity> : null}
                     {item._resultType === 'sittaFile' ? <TouchableOpacity onPress={() => openSittaSearchFileManager(item)} style={{ padding: 8 }} accessibilityLabel="د فایل مدیریت"><Ionicons name="folder-open-outline" size={20} color={COLORS.gold} /></TouchableOpacity> : null}
-                    {item._resultType !== 'sitta' && item._resultType !== 'sittaFile' && item._resultType !== 'scholar' ? <TouchableOpacity onPress={() => deleteSearchResult(item)} style={{ padding: 8 }} accessibilityLabel="حذف"><Ionicons name="trash-outline" size={20} color={COLORS.red} /></TouchableOpacity> : null}
+                    {(item._resultType !== 'scholar' && !(item._resultType === 'sitta' && item._sittaLevel === 'kitab')) ? <TouchableOpacity onPress={() => deleteSearchResult(item)} style={{ padding: 8 }} accessibilityLabel="حذف"><Ionicons name="trash-outline" size={20} color={COLORS.red} /></TouchableOpacity> : null}
                     <TouchableOpacity onPress={() => openSearchResult(item)} style={{ padding: 4 }}><Text style={styles.lessonArrow}>‹</Text></TouchableOpacity>
                   </View>
                   {searchEditingKey === editKey ? (
