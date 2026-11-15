@@ -4254,17 +4254,6 @@ export default function App() {
                 </View>
               </View>
 
-              {resumeEntry?.resourceId ? (
-                <TouchableOpacity onPress={resumeLastLearning} style={[styles.lessonCard, { marginHorizontal: 16, marginTop: 12, padding: 14, flexDirection: 'row-reverse', alignItems: 'center', gap: 10 }]} activeOpacity={0.85}>
-                  <Ionicons name="play-circle" size={26} color={COLORS.gold} />
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.lessonTitle}>له خپل پخواني درس څخه دوام ورکړئ</Text>
-                    <Text style={styles.smallMuted}>{resumeEntry.title || 'وروستی ثبت شوی درس'} · {resumeEntry.type === 'pdf' ? `مخ ${resumeEntry.page || 1}` : formatDuration(resumeEntry.positionMillis || 0)}</Text>
-                  </View>
-                  <Ionicons name="chevron-back" size={20} color={COLORS.gold} />
-                </TouchableOpacity>
-              ) : null}
-
               {/* اته عمومي علمي فولډرونه؛ پخوانۍ ۱۶ برخې دننه مدغم دي */}
               <View style={styles.homeCategoriesGrid}>
                 {HOME_SECTION_GROUPS.map(group => {
@@ -4340,18 +4329,23 @@ export default function App() {
                 </TouchableOpacity>
               </View>
 
-              {/* اذکار او یادښتونه */}
+              {/* د پخواني درس دوام او شخصي نوټونه؛ اذکار به په جلا نوي سیستم کې تنظیم شي */}
               <View style={styles.homeWideCardsRow}>
                 <TouchableOpacity
                   style={homeFolderCardStyle('wide_0', styles.homeWideCard)}
-                  onPress={() => setScreen('adhkarHome')}
-                  activeOpacity={0.82}
+                  onPress={resumeLastLearning}
+                  activeOpacity={resumeEntry?.resourceId ? 0.82 : 1}
                 >
-                  <Ionicons name={homeDesign.homeIcons?.wide_0 || "moon-outline"} color={getHomeFolderDesign('wide_0').folderIconColor} size={getHomeFolderDesign('wide_0').iconSize} />
+                  <Ionicons name="play-circle-outline" color={getHomeFolderDesign('wide_0').folderIconColor} size={getHomeFolderDesign('wide_0').iconSize} />
                   <View style={styles.homeWideTextBox}>
-                    <Text style={homeFolderTitleStyle('wide_0', styles.homeWideTitle)}>{homeDesign.homeLabels?.wide_0 || t("د سهار او ماښام اذکار")}</Text>
-                    <Text style={homeFolderTitleStyle('wide_0', styles.homeWideSubtitle)}>{homeDesign.homeSubtitles?.wide_0 || t("ورځني اذکار")}</Text>
+                    <Text style={homeFolderTitleStyle('wide_0', styles.homeWideTitle)}>خپل پخواني درس ته دوام ورکړئ</Text>
+                    <Text style={homeFolderTitleStyle('wide_0', styles.homeWideSubtitle)} numberOfLines={2}>
+                      {resumeEntry?.resourceId
+                        ? `${resumeEntry.title || 'وروستی ثبت شوی درس'} · ${resumeEntry.type === 'pdf' ? `مخ ${resumeEntry.page || 1}` : formatDuration(resumeEntry.positionMillis || 0)}`
+                        : 'ستاسو وروستی لوستل شوی یا اورېدلی درس به دلته ښکاره شي'}
+                    </Text>
                   </View>
+                  {resumeEntry?.resourceId ? <Ionicons name="chevron-back" size={18} color={COLORS.gold} /> : null}
                 </TouchableOpacity>
                 <TouchableOpacity
                   style={homeFolderCardStyle('wide_1', styles.homeWideCard)}
