@@ -458,7 +458,9 @@ export default function App() {
   const [fileNameEdit, setFileNameEdit] = useState(null);
   const [generalMaterialsScope, setGeneralMaterialsScope] = useState('');
   const [formFolderParentChoice, setFormFolderParentChoice] = useState('');
-  const [formLinkedGeneralMaterialId, setFormLinkedGeneralMaterialId] = useState('');
+  const [formLinkedGeneralMaterialId, setFormLinkedGeneralMaterialId] = useState(''); // legacy compatibility
+  const [formLinkedAudioMaterialId, setFormLinkedAudioMaterialId] = useState('');
+  const [formLinkedPdfMaterialId, setFormLinkedPdfMaterialId] = useState('');
   const [settingsSearch, setSettingsSearch] = useState('');
   const [showColorSettings, setShowColorSettings] = useState(false);
   const [selectedAcademicSurah, setSelectedAcademicSurah] = useState(null);
@@ -983,6 +985,8 @@ export default function App() {
     setFormAudioStartSeconds('');
     setFormPdfPage('');
     setFormLinkedGeneralMaterialId('');
+    setFormLinkedAudioMaterialId('');
+    setFormLinkedPdfMaterialId('');
     setFormLinkedAudioStartSeconds('');
     setFormLinkedPdfPage('');
     setFormLanguage('پښتو');
@@ -1469,11 +1473,14 @@ export default function App() {
     }
 
     const existingItem = editingGlobalItemId ? globalItems.find(item => item.id === editingGlobalItemId) : null;
-    const linkedGeneralMaterial = formLinkedGeneralMaterialId
-      ? getLessonLinkableGeneralMaterials().find(row => row.id === formLinkedGeneralMaterialId)
+    const linkedAudioMaterial = formLinkedAudioMaterialId
+      ? getLessonLinkableAudioMaterials().find(row => row.id === formLinkedAudioMaterialId)
       : null;
-    if (formLinkedGeneralMaterialId && !linkedGeneralMaterial) {
-      Alert.alert('عمومي مواد ونه موندل شول', 'له ټاکلي اصلي یا فرعي فولډر څخه مواد بیا وټاکئ.');
+    const linkedPdfMaterial = formLinkedPdfMaterialId
+      ? getLessonLinkablePdfMaterials().find(row => row.id === formLinkedPdfMaterialId)
+      : null;
+    if ((formLinkedAudioMaterialId && !linkedAudioMaterial) || (formLinkedPdfMaterialId && !linkedPdfMaterial)) {
+      Alert.alert('عمومي مواد ونه موندل شول', 'د آډیو یا PDF سرچینه له ټاکلي فولډر څخه بیا وټاکئ.');
       return;
     }
     const newItem = {
@@ -1489,7 +1496,9 @@ export default function App() {
       video: formVideo,
       audioStartSeconds: parsedOptionalAudioStart,
       pdfPage: parsedOptionalPdfPage,
-      linkedGeneralMaterialId: formLinkedGeneralMaterialId || '',
+      linkedGeneralMaterialId: formLinkedAudioMaterialId || formLinkedPdfMaterialId || '',
+      linkedAudioMaterialId: formLinkedAudioMaterialId || '',
+      linkedPdfMaterialId: formLinkedPdfMaterialId || '',
       linkedAudioStartSeconds: parsedLinkedAudioStart,
       linkedPdfPage: parsedLinkedPdfPage,
       scholar: formScholar.trim(),
@@ -2454,29 +2463,53 @@ export default function App() {
     return sittaData?.[selectedSittaBook?.id]?.__kitabMedia?.[selectedSittaKitab] || {};
   }
 
-  async function pickAndSaveSittaMedia(level, targetId = null, number = null, kind = 'audio') {
+  async function pickAndSaveSittaMedia(level, targetId = null, number = null, kind = 'audio', replaceFileId = '') {
     try {
       const result = await DocumentPicker.getDocumentAsync({
         type: kind === 'audio' ? ['audio/*'] : 'application/pdf',
         copyToCacheDirectory: true,
-        multiple: false
+        multiple: true
       });
       if (result.canceled || !result.assets?.length) return;
-      const file = result.assets[0];
-      const uri = await keepPickedFile(file, `sitta-${kind}`);
+      const pickedFiles = [];
+      for (const file of result.assets) {
+        const uri = await keepPickedFile(file, `sitta-${kind}`);
+        pickedFiles.push({ id: `sitta-${kind}-${Date.now()}-${pickedFiles.length}`, name: file.name || `${kind} ${pickedFiles.length + 1}`, uri });
+      }
       const bookId = selectedSittaBook.id;
       const bookRows = { ...(sittaData[bookId] || {}) };
+      const appendMedia = (record) => {
+        const oldList = Array.isArray(record[`${kind}Files`])
+          ? record[`${kind}Files`]
+          : (record[kind] ? [{ id: `legacy-${kind}-${record.id || selectedSittaKitab}`, name: `${kind} (پخوانی فایل)`, uri: record[kind] }] : []);
+        let merged;
+        if (replaceFileId) {
+          let used = false;
+          merged = oldList.map(oldFile => {
+            if (oldFile.id !== replaceFileId || used) return oldFile;
+            used = true;
+            return pickedFiles[0] || oldFile;
+          });
+          if (!used) merged = [...oldList, ...pickedFiles];
+          else if (pickedFiles.length > 1) merged = [...merged, ...pickedFiles.slice(1)];
+        } else {
+          merged = [...oldList, ...pickedFiles];
+        }
+        return { ...record, [`${kind}Files`]: merged, [kind]: merged[0]?.uri || '' };
+      };
       if (level === 'kitab') {
         const mediaRows = { ...(bookRows.__kitabMedia || {}) };
-        mediaRows[selectedSittaKitab] = { ...(mediaRows[selectedSittaKitab] || {}), [kind]: uri };
+        mediaRows[selectedSittaKitab] = appendMedia(mediaRows[selectedSittaKitab] || {});
         bookRows.__kitabMedia = mediaRows;
       } else {
         const kitabRows = (bookRows[selectedSittaKitab] || []).map(bab => {
           if (bab.id !== targetId) return bab;
-          if (level === 'bab') return { ...bab, [kind]: uri };
+          if (level === 'bab') return appendMedia(bab);
           const hadithRows = (bab.hadithNumbers || []).map(row => {
             const oldNumber = typeof row === 'object' ? row.number : row;
-            return String(oldNumber) === String(number) ? { ...(typeof row === 'object' ? row : { number: oldNumber }), [kind]: uri } : row;
+            return String(oldNumber) === String(number)
+              ? appendMedia(typeof row === 'object' ? row : { number: oldNumber })
+              : row;
           });
           return { ...bab, hadithNumbers: hadithRows };
         });
@@ -2491,6 +2524,51 @@ export default function App() {
     } catch (error) { Alert.alert('ستونزه', 'فایل ثبت نه شو.'); }
   }
 
+  async function removeSittaMediaFile(level, targetId, number, kind, fileId) {
+    const bookId = selectedSittaBook?.id;
+    if (!bookId || !fileId) return;
+    const bookRows = { ...(sittaData[bookId] || {}) };
+    const updateRecord = record => {
+      const current = getSittaMediaFiles(record, kind);
+      const remaining = current.filter(file => file.id !== fileId);
+      return { ...record, [`${kind}Files`]: remaining, [kind]: remaining[0]?.uri || '' };
+    };
+    if (level === 'kitab') {
+      const mediaRows = { ...(bookRows.__kitabMedia || {}) };
+      mediaRows[selectedSittaKitab] = updateRecord(mediaRows[selectedSittaKitab] || {});
+      bookRows.__kitabMedia = mediaRows;
+    } else {
+      const kitabRows = (bookRows[selectedSittaKitab] || []).map(bab => {
+        if (bab.id !== targetId) return bab;
+        if (level === 'bab') return updateRecord(bab);
+        const hadithNumbers = (bab.hadithNumbers || []).map(row => {
+          const oldNumber = typeof row === 'object' ? row.number : row;
+          return String(oldNumber) === String(number) ? updateRecord(typeof row === 'object' ? row : { number: oldNumber }) : row;
+        });
+        return { ...bab, hadithNumbers };
+      });
+      bookRows[selectedSittaKitab] = kitabRows;
+    }
+    await saveSittaData({ ...sittaData, [bookId]: bookRows });
+    if (level === 'bab' || level === 'hadith') {
+      const updatedBab = (bookRows[selectedSittaKitab] || []).find(row => row.id === targetId);
+      if (updatedBab?.id === selectedSittaBab?.id) setSelectedSittaBab(updatedBab);
+    }
+  }
+
+  function getSittaMediaFiles(media, kind) {
+    if (!media) return [];
+    const list = Array.isArray(media[`${kind}Files`]) ? media[`${kind}Files`] : [];
+    if (list.length) return list.filter(file => file && file.uri);
+    return media[kind] ? [{ id: `legacy-${kind}`, name: `${kind} فایل`, uri: media[kind] }] : [];
+  }
+
+  function openSittaMediaFile(file, kind, title, id) {
+    if (!file?.uri) return;
+    if (kind === 'audio') startAudio({ id: `sitta-${id}-${file.id || 'audio'}`, title: `${title} – ${file.name || 'آډیو'}`, audio: file.uri, scholar: '', section: selectedSittaBook?.name || 'حدیث' }, 0);
+    else openPdf({ id: `sitta-${id}-${file.id || 'pdf'}`, title: `${title} – ${file.name || 'PDF'}`, pdf: file.uri }, 1);
+  }
+
   function openSittaMedia(media, title, id) {
     if (media?.audio) startAudio({ id: `sitta-${id}`, title, audio: media.audio, scholar: '', section: selectedSittaBook?.name || 'حدیث' }, 0);
     if (media?.pdf) openPdf({ id: `sitta-${id}`, title, pdf: media.pdf }, 1);
@@ -2503,7 +2581,7 @@ export default function App() {
     }
     const bookRows = sittaData[selectedSittaBook.id] || {};
     const kitabRows = bookRows[selectedSittaKitab] || [];
-    const bab = { id: `bab-${Date.now()}`, name: sittaBabName.trim(), hadithNumbers: [], audio: '', pdf: '' };
+    const bab = { id: `bab-${Date.now()}`, name: sittaBabName.trim(), hadithNumbers: [], audio: '', pdf: '', audioFiles: [], pdfFiles: [] };
     await saveSittaData({ ...sittaData, [selectedSittaBook.id]: { ...bookRows, [selectedSittaKitab]: [...kitabRows, bab] } });
     setSittaBabName('');
   }
@@ -2524,7 +2602,7 @@ export default function App() {
     if (sittaHadithPdfPage.trim() && (!Number.isInteger(pdfPage) || pdfPage < 1)) { Alert.alert('ناسم مخ', 'د PDF مخ مثبته شمېره ولیکئ.'); return; }
     const bookRows = sittaData[selectedSittaBook.id] || {};
     const kitabRows = bookRows[selectedSittaKitab] || [];
-    const updatedBabRows = kitabRows.map(bab => bab.id === selectedSittaBab.id ? { ...bab, hadithNumbers: [...(bab.hadithNumbers || []), { number, audio: '', pdf: '', audioStartSeconds: audioSeconds, pdfPage }] } : bab);
+    const updatedBabRows = kitabRows.map(bab => bab.id === selectedSittaBab.id ? { ...bab, hadithNumbers: [...(bab.hadithNumbers || []), { number, audio: '', pdf: '', audioFiles: [], pdfFiles: [], audioStartSeconds: audioSeconds, pdfPage }] } : bab);
     await saveSittaData({ ...sittaData, [selectedSittaBook.id]: { ...bookRows, [selectedSittaKitab]: updatedBabRows } });
     const updatedBab = updatedBabRows.find(bab => bab.id === selectedSittaBab.id);
     setSelectedSittaBab(updatedBab);
@@ -3102,6 +3180,9 @@ export default function App() {
     setFormAudioStartSeconds(item.audioStartSeconds != null ? String(item.audioStartSeconds) : '');
     setFormPdfPage(item.pdfPage != null ? String(item.pdfPage) : '');
     setFormLinkedGeneralMaterialId(item.linkedGeneralMaterialId || '');
+    const legacyLinkedSource = globalItems.find(row => row.id === item.linkedGeneralMaterialId);
+    setFormLinkedAudioMaterialId(item.linkedAudioMaterialId || (legacyLinkedSource && (legacyLinkedSource.audio || legacyLinkedSource.audioTracks?.length) ? item.linkedGeneralMaterialId : ''));
+    setFormLinkedPdfMaterialId(item.linkedPdfMaterialId || (legacyLinkedSource?.pdf ? item.linkedGeneralMaterialId : ''));
     setFormLinkedAudioStartSeconds(item.linkedAudioStartSeconds != null ? String(item.linkedAudioStartSeconds) : '');
     setFormLinkedPdfPage(item.linkedPdfPage != null ? String(item.linkedPdfPage) : '');
     setFormLanguage(item.language || 'پښتو');
@@ -3254,6 +3335,14 @@ export default function App() {
       (item.generalParentFolder || item.folderParent || '') === formFolderParentChoice
     ).map(item => ({ ...item, _lessonSourceScope: 'فرعي فولډر' })) : [];
     return [...mainFolderItems, ...subFolderItems];
+  }
+
+  function getLessonLinkableAudioMaterials() {
+    return getLessonLinkableGeneralMaterials().filter(row => !!(row.audio || row.audioTracks?.length));
+  }
+
+  function getLessonLinkablePdfMaterials() {
+    return getLessonLinkableGeneralMaterials().filter(row => !!row.pdf);
   }
 
   function getGeneralMaterialItems() {
@@ -4372,18 +4461,18 @@ export default function App() {
               const hasChildren = Array.isArray(folder.children) && folder.children.length > 0;
               return (
                 <React.Fragment key={folder.name}>
-                <View style={styles.listCard}>
-                  <TouchableOpacity style={styles.flexText} onPress={() => {
+                <View style={[styles.listCard, { flexDirection: 'column', alignItems: 'stretch' }]}>
+                  <TouchableOpacity style={{ flexDirection: 'row', alignItems: 'center', width: '100%', paddingBottom: 8 }} onPress={() => {
                     if (hasChildren) { setSelectedFolderParent(folder.name); setScreen('sectionSubFolders'); }
                     else openFolder(folder.name);
                   }}>
-                    <Ionicons name={hasChildren ? 'folder-open-outline' : ['book-outline','school-outline','library-outline','albums-outline','document-text-outline','bookmark-outline'][index % 6]} size={22} color={COLORS.gold} />
-                    <View style={styles.flexText}>
-                      <Text style={[styles.listCardTitle, { color: settings.textColor }]}>{folder.name}</Text>
+                    <Ionicons name={hasChildren ? 'folder-open-outline' : ['book-outline','school-outline','library-outline','albums-outline','document-text-outline','bookmark-outline'][index % 6]} size={22} color={COLORS.gold} style={{ marginRight: 10 }} />
+                    <View style={{ flex: 1, minWidth: 0 }}>
+                      <Text style={[styles.listCardTitle, { color: settings.textColor }]} numberOfLines={2}>{folder.name}</Text>
                       <Text style={styles.smallMuted}>{hasChildren ? `${folder.children.length} فرعي فولډرونه · ${count} مواد` : `${count} مواد`}</Text>
                     </View>
                   </TouchableOpacity>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7 }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', flexWrap: 'wrap', gap: 12, borderTopWidth: 1, borderTopColor: COLORS.border, paddingTop: 8 }}>
                     <TouchableOpacity onPress={() => { setSelectedFolder(folder.name); setSelectedFolderParent(''); setGeneralMaterialsScope('main'); setScreen('generalMaterials'); }}><Ionicons name="library-outline" size={19} color={COLORS.gold} /></TouchableOpacity>
                     <TouchableOpacity onPress={() => moveAdminFolder(selectedSection, index, -1)}><Text style={styles.deleteIcon}>↑</Text></TouchableOpacity>
                     <TouchableOpacity onPress={() => moveAdminFolder(selectedSection, index, 1)}><Text style={styles.deleteIcon}>↓</Text></TouchableOpacity>
@@ -4431,12 +4520,12 @@ export default function App() {
               : getOrderedSubFolders(selectedSection, selectedFolderParent)
             ).map((child, index) => (
               <React.Fragment key={child}>
-              <View style={[styles.listCard, { backgroundColor: homeDesign.subFolderBackground, borderColor: homeDesign.folderBorderColor }]}>
-                <TouchableOpacity style={styles.flexText} onPress={() => openFolder(child, selectedFolderParent)}>
-                  <Text style={[styles.listCardTitle, { color: homeDesign.subFolderTextColor || COLORS.goldLight, fontSize: homeDesign.subFolderTitleSize || 16 }]}>{selectedFolderParent === 'اسماء او صفات' ? `${child} جل جلاله` : child}</Text>
+              <View style={[styles.listCard, { backgroundColor: homeDesign.subFolderBackground, borderColor: homeDesign.folderBorderColor, flexDirection: 'column', alignItems: 'stretch' }]}>
+                <TouchableOpacity style={{ width: '100%', paddingBottom: 8 }} onPress={() => openFolder(child, selectedFolderParent)}>
+                  <Text style={[styles.listCardTitle, { color: homeDesign.subFolderTextColor || COLORS.goldLight, fontSize: homeDesign.subFolderTitleSize || 16 }]} numberOfLines={2}>{selectedFolderParent === 'اسماء او صفات' ? `${child} جل جلاله` : child}</Text>
                   <Text style={styles.smallMuted}>{getFolderItemCount({ name: child })} مواد</Text>
                 </TouchableOpacity>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', flexWrap: 'wrap', gap: 12, borderTopWidth: 1, borderTopColor: COLORS.border, paddingTop: 8 }}>
                   <TouchableOpacity onPress={() => moveAdminFolder(selectedFolderParent === 'اسماء او صفات' ? 'allahNames' : `${selectedSection}::${selectedFolderParent}`, index, -1)}><Text style={styles.deleteIcon}>↑</Text></TouchableOpacity>
                   <TouchableOpacity onPress={() => moveAdminFolder(selectedFolderParent === 'اسماء او صفات' ? 'allahNames' : `${selectedSection}::${selectedFolderParent}`, index, 1)}><Text style={styles.deleteIcon}>↓</Text></TouchableOpacity>
                   <TouchableOpacity onPress={() => { setEditingFolderKey(`${selectedFolderParent === 'اسماء او صفات' ? 'allah' : 'child'}:${child}`); setEditingFolderName(child); }}><Ionicons name="create-outline" size={19} color={COLORS.gold} /></TouchableOpacity>
@@ -4748,45 +4837,60 @@ export default function App() {
               <Field textColor={settings.textColor} label="نوی عالم / لیکوال (که په لېست کې نه وي)" value={formScholar} onChangeText={setFormScholar} placeholder="نوم ولیکئ یا له پورته لېست څخه یې وټاکئ" />
               <Text style={[styles.cardHeading, { color: settings.headingColor, marginTop: 8 }]}>علمي برخه وټاکئ</Text>
               <View style={{ flexDirection: 'row-reverse', flexWrap: 'wrap', gap: 7 }}>
-                {SECTIONS.map(section => <TouchableOpacity key={section} onPress={() => { setSelectedSection(section); const first = getSectionFolders(section)[0]?.name || ''; setSelectedFolder(first); setSelectedFolderParent(''); setFormFolderParentChoice(''); setFormLinkedGeneralMaterialId(''); if (generalMaterialsScope) setGeneralMaterialsScope('main'); }} style={{ paddingVertical: 7, paddingHorizontal: 10, borderRadius: 9, borderWidth: 1, borderColor: selectedSection === section ? COLORS.gold : COLORS.border, backgroundColor: selectedSection === section ? COLORS.card2 : COLORS.card }}><Text style={{ color: COLORS.white }}>{section}</Text></TouchableOpacity>)}
+                {SECTIONS.map(section => <TouchableOpacity key={section} onPress={() => { setSelectedSection(section); const first = getSectionFolders(section)[0]?.name || ''; setSelectedFolder(first); setSelectedFolderParent(''); setFormFolderParentChoice(''); setFormLinkedGeneralMaterialId(''); setFormLinkedAudioMaterialId(''); setFormLinkedPdfMaterialId(''); setFormLinkedAudioStartSeconds(''); setFormLinkedPdfPage(''); if (generalMaterialsScope) setGeneralMaterialsScope('main'); }} style={{ paddingVertical: 7, paddingHorizontal: 10, borderRadius: 9, borderWidth: 1, borderColor: selectedSection === section ? COLORS.gold : COLORS.border, backgroundColor: selectedSection === section ? COLORS.card2 : COLORS.card }}><Text style={{ color: COLORS.white }}>{section}</Text></TouchableOpacity>)}
               </View>
               <Text style={[styles.cardHeading, { color: settings.headingColor, marginTop: 8 }]}>اصلي فولډر وټاکئ</Text>
               <View style={{ flexDirection: 'row-reverse', flexWrap: 'wrap', gap: 7 }}>
-                {getSectionFolders(selectedSection).map(folder => <TouchableOpacity key={folder.name} onPress={() => { setSelectedFolder(folder.name); setSelectedFolderParent(''); setFormFolderParentChoice(''); setFormLinkedGeneralMaterialId(''); if (generalMaterialsScope) setGeneralMaterialsScope('main'); }} style={{ paddingVertical: 7, paddingHorizontal: 10, borderRadius: 9, borderWidth: 1, borderColor: selectedFolder === folder.name && !formFolderParentChoice ? COLORS.gold : COLORS.border, backgroundColor: selectedFolder === folder.name && !formFolderParentChoice ? COLORS.card2 : COLORS.card }}><Text style={{ color: COLORS.white }}>{folder.name}</Text></TouchableOpacity>)}
+                {getSectionFolders(selectedSection).map(folder => <TouchableOpacity key={folder.name} onPress={() => { setSelectedFolder(folder.name); setSelectedFolderParent(''); setFormFolderParentChoice(''); setFormLinkedGeneralMaterialId(''); setFormLinkedAudioMaterialId(''); setFormLinkedPdfMaterialId(''); setFormLinkedAudioStartSeconds(''); setFormLinkedPdfPage(''); if (generalMaterialsScope) setGeneralMaterialsScope('main'); }} style={{ paddingVertical: 7, paddingHorizontal: 10, borderRadius: 9, borderWidth: 1, borderColor: selectedFolder === folder.name && !formFolderParentChoice ? COLORS.gold : COLORS.border, backgroundColor: selectedFolder === folder.name && !formFolderParentChoice ? COLORS.card2 : COLORS.card }}><Text style={{ color: COLORS.white }}>{folder.name}</Text></TouchableOpacity>)}
               </View>
               {getSectionFolders(selectedSection).some(folder => (folder.children || []).length > 0) && <>
                 <Text style={[styles.cardHeading, { color: settings.headingColor, marginTop: 8 }]}>فرعي فولډر ته د موادو ټاکل</Text>
                 <View style={{ flexDirection: 'row-reverse', flexWrap: 'wrap', gap: 7 }}>
-                  {getSectionFolders(selectedSection).filter(folder => (folder.children || []).length > 0).map(folder => <TouchableOpacity key={folder.name} onPress={() => { setFormFolderParentChoice(folder.name); setSelectedFolderParent(folder.name); setSelectedFolder(''); setFormLinkedGeneralMaterialId(''); setFormLinkedAudioStartSeconds(''); setFormLinkedPdfPage(''); if (generalMaterialsScope) setGeneralMaterialsScope('subfolder'); }} style={{ paddingVertical: 7, paddingHorizontal: 10, borderRadius: 9, borderWidth: 1, borderColor: formFolderParentChoice === folder.name ? COLORS.gold : COLORS.border, backgroundColor: formFolderParentChoice === folder.name ? COLORS.card2 : COLORS.card }}><Text style={{ color: COLORS.white }}>{folder.name} – فرعي</Text></TouchableOpacity>)}
+                  {getSectionFolders(selectedSection).filter(folder => (folder.children || []).length > 0).map(folder => <TouchableOpacity key={folder.name} onPress={() => { setFormFolderParentChoice(folder.name); setSelectedFolderParent(folder.name); setSelectedFolder(''); setFormLinkedGeneralMaterialId(''); setFormLinkedAudioMaterialId(''); setFormLinkedPdfMaterialId(''); setFormLinkedAudioStartSeconds(''); setFormLinkedPdfPage(''); if (generalMaterialsScope) setGeneralMaterialsScope('subfolder'); }} style={{ paddingVertical: 7, paddingHorizontal: 10, borderRadius: 9, borderWidth: 1, borderColor: formFolderParentChoice === folder.name ? COLORS.gold : COLORS.border, backgroundColor: formFolderParentChoice === folder.name ? COLORS.card2 : COLORS.card }}><Text style={{ color: COLORS.white }}>{folder.name} – فرعي</Text></TouchableOpacity>)}
                 </View>
                 {!!formFolderParentChoice && <View style={{ flexDirection: 'row-reverse', flexWrap: 'wrap', gap: 7, marginTop: 7 }}>
-                  {(getSectionFolders(selectedSection).find(folder => folder.name === formFolderParentChoice)?.children || []).map(child => <TouchableOpacity key={child} onPress={() => { setSelectedFolder(child); setFormLinkedGeneralMaterialId(''); setFormLinkedAudioStartSeconds(''); setFormLinkedPdfPage(''); }} style={{ paddingVertical: 7, paddingHorizontal: 10, borderRadius: 9, borderWidth: 1, borderColor: selectedFolder === child ? COLORS.gold : COLORS.border, backgroundColor: selectedFolder === child ? COLORS.card2 : COLORS.card }}><Text style={{ color: COLORS.white }}>{child}</Text></TouchableOpacity>)}
+                  {(getSectionFolders(selectedSection).find(folder => folder.name === formFolderParentChoice)?.children || []).map(child => <TouchableOpacity key={child} onPress={() => { setSelectedFolder(child); setFormLinkedGeneralMaterialId(''); setFormLinkedAudioMaterialId(''); setFormLinkedPdfMaterialId(''); setFormLinkedAudioStartSeconds(''); setFormLinkedPdfPage(''); }} style={{ paddingVertical: 7, paddingHorizontal: 10, borderRadius: 9, borderWidth: 1, borderColor: selectedFolder === child ? COLORS.gold : COLORS.border, backgroundColor: selectedFolder === child ? COLORS.card2 : COLORS.card }}><Text style={{ color: COLORS.white }}>{child}</Text></TouchableOpacity>)}
                 </View>}
               </>}
               {!!(formFolderParentChoice || selectedFolder) && (
                 <View style={{ marginTop: 12, paddingTop: 10, borderTopWidth: 1, borderTopColor: COLORS.border }}>
-                  <Text style={[styles.cardHeading, { color: settings.headingColor }]}>د درس لپاره د اصلي یا فرعي فولډر فایل په لاس وټاکئ (اختیاري)</Text>
-                  <Text style={styles.smallMuted}>تر څو فایل دلته انتخاب نه کړئ، د اصلي او فرعي فولډر هېڅ عمومي فایل به له دې درس سره نه نښلول کېږي.</Text>
-                  {getLessonLinkableGeneralMaterials().map(row => (
-                    <TouchableOpacity key={row.id} onPress={() => {
-                      const nextId = formLinkedGeneralMaterialId === row.id ? '' : row.id;
-                      setFormLinkedGeneralMaterialId(nextId);
-                      if (!nextId) { setFormLinkedAudioStartSeconds(''); setFormLinkedPdfPage(''); }
-                    }} style={{ flexDirection: 'row-reverse', alignItems: 'center', paddingVertical: 8 }}>
-                      <Ionicons name={formLinkedGeneralMaterialId === row.id ? 'radio-button-on' : 'radio-button-off'} size={20} color={COLORS.gold} />
+                  <Text style={[styles.cardHeading, { color: settings.headingColor }]}>د درس لپاره جلا عمومي فایلونه (اختیاري)</Text>
+                  <Text style={styles.smallMuted}>آډیو او PDF له یو بل څخه خپلواک دي. یوازې یو، دواړه، یا هېڅ یو ټاکلای شئ.</Text>
+                  <Text style={[styles.cardHeading, { color: settings.headingColor, marginTop: 10 }]}>♫ د آډیو سرچینه</Text>
+                  <TouchableOpacity onPress={() => { setFormLinkedAudioMaterialId(''); setFormLinkedAudioStartSeconds(''); }} style={{ flexDirection: 'row-reverse', alignItems: 'center', paddingVertical: 7 }}>
+                    <Ionicons name={!formLinkedAudioMaterialId ? 'radio-button-on' : 'radio-button-off'} size={20} color={COLORS.gold} />
+                    <Text style={{ color: COLORS.white, marginRight: 8 }}>آډیو مه نښلوه</Text>
+                  </TouchableOpacity>
+                  {getLessonLinkableAudioMaterials().map(row => (
+                    <TouchableOpacity key={`audio-${row.id}`} onPress={() => setFormLinkedAudioMaterialId(formLinkedAudioMaterialId === row.id ? '' : row.id)} style={{ flexDirection: 'row-reverse', alignItems: 'center', paddingVertical: 7 }}>
+                      <Ionicons name={formLinkedAudioMaterialId === row.id ? 'radio-button-on' : 'radio-button-off'} size={20} color={COLORS.gold} />
                       <View style={{ marginRight: 8, flex: 1 }}>
-                        <Text style={{ color: COLORS.white, textAlign: 'right' }}>{row.title} {row.pdf ? '· PDF' : ''} {row.audio || row.audioTracks?.length ? '· آډیو' : ''}</Text>
+                        <Text style={{ color: COLORS.white, textAlign: 'right' }}>{row.title}</Text>
                         <Text style={[styles.smallMuted, { textAlign: 'right' }]}>{row._lessonSourceScope}</Text>
                       </View>
                     </TouchableOpacity>
                   ))}
-                  {getLessonLinkableGeneralMaterials().length === 0 && <Text style={styles.smallMuted}>په ټاکل شوي اصلي او فرعي فولډر کې عمومي فایل نشته.</Text>}
-                  {formLinkedGeneralMaterialId ? (
-                    <>
-                      <Field textColor={settings.textColor} label="د ټاکلي فایل د آډیو پیل (ثانیې یا 01:35)" value={formLinkedAudioStartSeconds} onChangeText={setFormLinkedAudioStartSeconds} placeholder="تش پرېږدئ: له اصلي پیل څخه" />
-                      <Field textColor={settings.textColor} label="د ټاکلي PDF مخ" value={formLinkedPdfPage} onChangeText={setFormLinkedPdfPage} placeholder="تش پرېږدئ: له لومړي مخ څخه" keyboardType="numeric" />
-                    </>
-                  ) : <Text style={styles.smallMuted}>یو فایل انتخاب کړئ؛ فایل نه نقل کېږي، یوازې دې درس ته نښلول کېږي.</Text>}
+                  {!!formLinkedAudioMaterialId && (
+                    <Field textColor={settings.textColor} label="د ټاکلي آډیو د پیل وخت (ثانیې یا 01:35)" value={formLinkedAudioStartSeconds} onChangeText={setFormLinkedAudioStartSeconds} placeholder="تش پرېږدئ: له اصلي پیل څخه" />
+                  )}
+                  <Text style={[styles.cardHeading, { color: settings.headingColor, marginTop: 12 }]}>▤ د PDF سرچینه</Text>
+                  <TouchableOpacity onPress={() => { setFormLinkedPdfMaterialId(''); setFormLinkedPdfPage(''); }} style={{ flexDirection: 'row-reverse', alignItems: 'center', paddingVertical: 7 }}>
+                    <Ionicons name={!formLinkedPdfMaterialId ? 'radio-button-on' : 'radio-button-off'} size={20} color={COLORS.gold} />
+                    <Text style={{ color: COLORS.white, marginRight: 8 }}>PDF مه نښلوه</Text>
+                  </TouchableOpacity>
+                  {getLessonLinkablePdfMaterials().map(row => (
+                    <TouchableOpacity key={`pdf-${row.id}`} onPress={() => setFormLinkedPdfMaterialId(formLinkedPdfMaterialId === row.id ? '' : row.id)} style={{ flexDirection: 'row-reverse', alignItems: 'center', paddingVertical: 7 }}>
+                      <Ionicons name={formLinkedPdfMaterialId === row.id ? 'radio-button-on' : 'radio-button-off'} size={20} color={COLORS.gold} />
+                      <View style={{ marginRight: 8, flex: 1 }}>
+                        <Text style={{ color: COLORS.white, textAlign: 'right' }}>{row.title}</Text>
+                        <Text style={[styles.smallMuted, { textAlign: 'right' }]}>{row._lessonSourceScope}</Text>
+                      </View>
+                    </TouchableOpacity>
+                  ))}
+                  {!!formLinkedPdfMaterialId && (
+                    <Field textColor={settings.textColor} label="د ټاکلي PDF مخ" value={formLinkedPdfPage} onChangeText={setFormLinkedPdfPage} placeholder="تش پرېږدئ: له لومړي مخ څخه" keyboardType="numeric" />
+                  )}
+                  {!getLessonLinkableAudioMaterials().length && !getLessonLinkablePdfMaterials().length && <Text style={styles.smallMuted}>په ټاکل شوي اصلي یا فرعي فولډر کې د انتخاب لپاره فایل نشته.</Text>}
                 </View>
               )}
             </View>
@@ -4904,16 +5008,29 @@ export default function App() {
               {!!selectedItem?.permission && <Text style={styles.smallMuted}>اجازه: {selectedItem.permission}</Text>}
             </View>
 
-            {selectedItem?.linkedGeneralMaterialId ? (() => {
-              const source = globalItems.find(row => row.id === selectedItem.linkedGeneralMaterialId);
-              if (!source) return <Text style={styles.smallMuted}>د دې درس تړلی اصلي فایل نور نه موندل کېږي؛ اصلي مواد بیا وټاکئ.</Text>;
+            {(selectedItem?.linkedAudioMaterialId || selectedItem?.linkedPdfMaterialId || selectedItem?.linkedGeneralMaterialId) ? (() => {
+              const audioSourceId = selectedItem.linkedAudioMaterialId || selectedItem.linkedGeneralMaterialId || '';
+              const pdfSourceId = selectedItem.linkedPdfMaterialId || selectedItem.linkedGeneralMaterialId || '';
+              const audioSource = audioSourceId ? globalItems.find(row => row.id === audioSourceId) : null;
+              const pdfSource = pdfSourceId ? globalItems.find(row => row.id === pdfSourceId) : null;
               return (
                 <View style={styles.formCard}>
-                  <Text style={[styles.cardHeading, { color: settings.headingColor }]}>له ټاکل شوي فولډر سره تړلي مواد</Text>
-                  <Text style={styles.smallMuted}>{source.title} · {source.generalScope === 'subfolder' ? 'فرعي فولډر' : 'اصلي فولډر'}</Text>
-                  {!!(source.audio || source.audioTracks?.length) && <GoldButton title="♫ د ټاکلي فایل آډیو واوره" onPress={() => startAudio(source, selectedItem.linkedAudioStartSeconds != null ? selectedItem.linkedAudioStartSeconds * 1000 : (source.audioStartSeconds != null ? source.audioStartSeconds * 1000 : 0))} />}
-                  {!!source.pdf && <GoldButton title="▤ د ټاکلي PDF مخ پرانیزه" secondary onPress={() => openPdf(source, selectedItem.linkedPdfPage || source.pdfPage || 1)} />}
-                  <Text style={styles.smallMuted}>دا فایل یوازې یو ځل ساتل شوی؛ دلته یوازې د همدې درس لپاره ټاکل شوی مخ او د آډیو پیل کارول کېږي.</Text>
+                  <Text style={[styles.cardHeading, { color: settings.headingColor }]}>د درس تړلي عمومي مواد</Text>
+                  {!!audioSourceId && audioSource && (
+                    <View style={{ marginBottom: 10 }}>
+                      <Text style={styles.smallMuted}>♫ آډیو: {audioSource.title} · {audioSource.generalScope === 'subfolder' ? 'فرعي فولډر' : 'اصلي فولډر'}</Text>
+                      <GoldButton title="♫ ټاکلی آډیو واوره" onPress={() => startAudio(audioSource, selectedItem.linkedAudioStartSeconds != null ? selectedItem.linkedAudioStartSeconds * 1000 : (audioSource.audioStartSeconds != null ? audioSource.audioStartSeconds * 1000 : 0))} />
+                    </View>
+                  )}
+                  {!!audioSourceId && !audioSource && <Text style={styles.smallMuted}>د آډیو ټاکل شوې سرچینه ونه موندل شوه.</Text>}
+                  {!!pdfSourceId && pdfSource && (
+                    <View style={{ marginBottom: 10 }}>
+                      <Text style={styles.smallMuted}>▤ PDF: {pdfSource.title} · {pdfSource.generalScope === 'subfolder' ? 'فرعي فولډر' : 'اصلي فولډر'}</Text>
+                      <GoldButton title="▤ ټاکلی PDF مخ پرانیزه" secondary onPress={() => openPdf(pdfSource, selectedItem.linkedPdfPage || pdfSource.pdfPage || 1)} />
+                    </View>
+                  )}
+                  {!!pdfSourceId && !pdfSource && <Text style={styles.smallMuted}>د PDF ټاکل شوې سرچینه ونه موندل شوه.</Text>}
+                  <Text style={styles.smallMuted}>آډیو او PDF جلا سرچینې لري؛ هر فایل یوازې یو ځل ساتل کېږي.</Text>
                 </View>
               );
             })() : null}
@@ -5452,10 +5569,10 @@ export default function App() {
             <PageHeader title={selectedSittaKitab} subtitle={selectedSittaBook.name} onBack={goBack} />
             <View style={styles.formCard}>
               <Text style={[styles.cardHeading, { color: settings.headingColor }]}>د ټول کتاب عمومي آډیو او PDF</Text>
-              <GoldButton title="♫ د کتاب عمومي آډیو ثبت کړئ" secondary onPress={() => pickAndSaveSittaMedia('kitab', null, null, 'audio')} />
-              <GoldButton title="▤ د کتاب عمومي PDF ثبت کړئ" secondary onPress={() => pickAndSaveSittaMedia('kitab', null, null, 'pdf')} />
-              {getSittaKitabMedia().audio ? <GoldButton title="▶ عمومي آډیو واوره" onPress={() => openSittaMedia({ audio: getSittaKitabMedia().audio }, selectedSittaKitab, `kitab-${selectedSittaKitab}`)} /> : null}
-              {getSittaKitabMedia().pdf ? <GoldButton title="▤ عمومي PDF ولوله" secondary onPress={() => openSittaMedia({ pdf: getSittaKitabMedia().pdf }, selectedSittaKitab, `kitab-${selectedSittaKitab}`)} /> : null}
+              <GoldButton title="♫ د کتاب آډیو فایلونه وټاکئ / نور زیات کړئ" secondary onPress={() => pickAndSaveSittaMedia('kitab', null, null, 'audio')} />
+              <GoldButton title="▤ د کتاب PDF فایلونه وټاکئ / نور زیات کړئ" secondary onPress={() => pickAndSaveSittaMedia('kitab', null, null, 'pdf')} />
+              {getSittaMediaFiles(getSittaKitabMedia(), 'audio').map((file, index) => <View key={file.id || `ka-${index}`} style={{ marginTop: 6 }}><Text style={styles.smallMuted}>{file.name || `آډیو ${index + 1}`}</Text><GoldButton title={`▶ آډیو ${index + 1} واوره`} onPress={() => openSittaMediaFile(file, 'audio', selectedSittaKitab, `kitab-${selectedSittaKitab}`)} /><View style={{ flexDirection: 'row-reverse', gap: 8 }}><GoldButton title="بدلول" secondary onPress={() => pickAndSaveSittaMedia('kitab', null, null, 'audio', file.id)} /><GoldButton title="حذف" secondary onPress={() => Alert.alert('د فایل حذف', 'دا آډیو له دې کتاب څخه لرې شي؟', [{ text: 'نه', style: 'cancel' }, { text: 'هو، حذف', style: 'destructive', onPress: () => removeSittaMediaFile('kitab', null, null, 'audio', file.id) }])} /></View></View>)}
+              {getSittaMediaFiles(getSittaKitabMedia(), 'pdf').map((file, index) => <View key={file.id || `kp-${index}`} style={{ marginTop: 6 }}><Text style={styles.smallMuted}>{file.name || `PDF ${index + 1}`}</Text><GoldButton title={`▤ PDF ${index + 1} ولوله`} secondary onPress={() => openSittaMediaFile(file, 'pdf', selectedSittaKitab, `kitab-${selectedSittaKitab}`)} /><View style={{ flexDirection: 'row-reverse', gap: 8 }}><GoldButton title="بدلول" secondary onPress={() => pickAndSaveSittaMedia('kitab', null, null, 'pdf', file.id)} /><GoldButton title="حذف" secondary onPress={() => Alert.alert('د فایل حذف', 'دا PDF له دې کتاب څخه لرې شي؟', [{ text: 'نه', style: 'cancel' }, { text: 'هو، حذف', style: 'destructive', onPress: () => removeSittaMediaFile('kitab', null, null, 'pdf', file.id) }])} /></View></View>)}
             </View>
             <View style={styles.formCard}><Text style={[styles.cardHeading, { color: settings.headingColor }]}>خپل باب فولډر جوړ کړئ</Text><Field textColor={settings.textColor} label="د باب نوم" value={sittaBabName} onChangeText={setSittaBabName} placeholder="د باب نوم ولیکئ" /><GoldButton title="＋ باب اضافه کړئ" onPress={addSittaBab} /></View>
             {(sittaData?.[selectedSittaBook.id]?.[selectedSittaKitab] || []).map(bab => <TouchableOpacity key={bab.id} style={styles.listCard} onPress={() => { setSelectedSittaBab(bab); setSittaHadithNumber(''); setSittaHadithAudioTime(''); setSittaHadithPdfPage(''); setScreen('sittaBabDetails'); }}><View style={styles.flexText}><Text style={[styles.listCardTitle, { color: settings.textColor }]}>{bab.name}</Text><Text style={styles.smallMuted}>د حدیثونو شمېرې: {(bab.hadithNumbers || []).length}</Text></View><Text style={styles.lessonArrow}>‹</Text></TouchableOpacity>)}
@@ -5467,10 +5584,11 @@ export default function App() {
             <PageHeader title={selectedSittaBab.name} subtitle={`${selectedSittaKitab} · ${selectedSittaBook?.name || ''}`} onBack={goBack} />
             <View style={styles.formCard}>
               <Text style={[styles.cardHeading, { color: settings.headingColor }]}>د دې باب عمومي آډیو او PDF</Text>
-              <GoldButton title="♫ د باب آډیو ثبت کړئ" secondary onPress={() => pickAndSaveSittaMedia('bab', selectedSittaBab.id, null, 'audio')} />
-              <GoldButton title="▤ د باب PDF ثبت کړئ" secondary onPress={() => pickAndSaveSittaMedia('bab', selectedSittaBab.id, null, 'pdf')} />
-              {selectedSittaBab.audio ? <GoldButton title="▶ د باب آډیو واوره" onPress={() => openSittaMedia({ audio: selectedSittaBab.audio }, selectedSittaBab.name, `bab-${selectedSittaBab.id}`)} /> : null}
-              {selectedSittaBab.pdf ? <GoldButton title="▤ د باب PDF ولوله" secondary onPress={() => openSittaMedia({ pdf: selectedSittaBab.pdf }, selectedSittaBab.name, `bab-${selectedSittaBab.id}`)} /> : null}
+              <GoldButton title="♫ د باب آډیو فایلونه وټاکئ / نور زیات کړئ" secondary onPress={() => pickAndSaveSittaMedia('bab', selectedSittaBab.id, null, 'audio')} />
+              <GoldButton title="▤ د باب PDF فایلونه وټاکئ / نور زیات کړئ" secondary onPress={() => pickAndSaveSittaMedia('bab', selectedSittaBab.id, null, 'pdf')} />
+              {getSittaMediaFiles(selectedSittaBab, 'audio').map((file, index) => <View key={file.id || `ba-${index}`} style={{ marginTop: 6 }}><Text style={styles.smallMuted}>{file.name || `آډیو ${index + 1}`}</Text><GoldButton title={`▶ د باب آډیو ${index + 1} واوره`} onPress={() => openSittaMediaFile(file, 'audio', selectedSittaBab.name, `bab-${selectedSittaBab.id}`)} /><View style={{ flexDirection: 'row-reverse', gap: 8 }}><GoldButton title="بدلول" secondary onPress={() => pickAndSaveSittaMedia('bab', selectedSittaBab.id, null, 'audio', file.id)} /><GoldButton title="حذف" secondary onPress={() => Alert.alert('د فایل حذف', 'دا آډیو له دې باب څخه لرې شي؟', [{ text: 'نه', style: 'cancel' }, { text: 'هو، حذف', style: 'destructive', onPress: () => removeSittaMediaFile('bab', selectedSittaBab.id, null, 'audio', file.id) }])} /></View></View>)}
+              {getSittaMediaFiles(selectedSittaBab, 'pdf').map((file, index) => <View key={file.id || `bp-${index}`} style={{ marginTop: 6 }}><Text style={styles.smallMuted}>{file.name || `PDF ${index + 1}`}</Text><GoldButton title={`▤ د باب PDF ${index + 1} ولوله`} secondary onPress={() => openSittaMediaFile(file, 'pdf', selectedSittaBab.name, `bab-${selectedSittaBab.id}`)} /><View style={{ flexDirection: 'row-reverse', gap: 8 }}><GoldButton title="بدلول" secondary onPress={() => pickAndSaveSittaMedia('bab', selectedSittaBab.id, null, 'pdf', file.id)} /><GoldButton title="حذف" secondary onPress={() => Alert.alert('د فایل حذف', 'دا PDF له دې باب څخه لرې شي؟', [{ text: 'نه', style: 'cancel' }, { text: 'هو، حذف', style: 'destructive', onPress: () => removeSittaMediaFile('bab', selectedSittaBab.id, null, 'pdf', file.id) }])} /></View></View>)}
+              <Text style={styles.smallMuted}>د آډیو او PDF فایلونو د زیاتولو لپاره پورته ثبت تڼۍ بیا وکاروئ؛ پخواني فایلونه به نه حذف کېږي.</Text>
             </View>
             <View style={styles.formCard}><Text style={[styles.cardHeading, { color: settings.headingColor }]}>د حدیث شمېره ثبت کړئ</Text><Field textColor={settings.textColor} label="د حدیث شمېره" value={sittaHadithNumber} onChangeText={setSittaHadithNumber} placeholder="یوازې شمېره" keyboardType="number-pad" /><Field textColor={settings.textColor} label="په عمومي آډیو کې د حدیث د پیل وخت (اختیاري mm:ss)" value={sittaHadithAudioTime} onChangeText={setSittaHadithAudioTime} placeholder="12:35" /><Field textColor={settings.textColor} label="په عمومي PDF کې د حدیث مخ (اختیاري)" value={sittaHadithPdfPage} onChangeText={setSittaHadithPdfPage} placeholder="25" keyboardType="number-pad" /><GoldButton title="＋ شمېره اضافه کړئ" onPress={addSittaHadithNumber} /></View>
             {(selectedSittaBab.hadithNumbers || []).map((entry, index) => {
@@ -5479,10 +5597,11 @@ export default function App() {
               return (
                 <View key={`${selectedSittaBab.id}-${index}`} style={[styles.formCard, { gap: 8 }]}>
                   <Text style={[styles.listCardTitle, { color: settings.textColor }]}>حدیث شمېره: {number}</Text>
-                  <GoldButton title="♫ د همدې حدیث آډیو کلیپ ثبت کړئ" secondary onPress={() => pickAndSaveSittaMedia('hadith', selectedSittaBab.id, number, 'audio')} />
-                  <GoldButton title="▤ د همدې حدیث PDF ثبت کړئ" secondary onPress={() => pickAndSaveSittaMedia('hadith', selectedSittaBab.id, number, 'pdf')} />
-                  {media.audio ? <GoldButton title="▶ د حدیث کلیپ واوره" onPress={() => openSittaMedia({ audio: media.audio }, `حدیث ${number}`, `hadith-${selectedSittaBab.id}-${number}`)} /> : null}
-                  {media.pdf ? <GoldButton title="▤ د حدیث PDF ولوله" secondary onPress={() => openSittaMedia({ pdf: media.pdf }, `حدیث ${number}`, `hadith-${selectedSittaBab.id}-${number}`)} /> : null}
+                  <GoldButton title="♫ د حدیث آډیو فایلونه وټاکئ / نور زیات کړئ" secondary onPress={() => pickAndSaveSittaMedia('hadith', selectedSittaBab.id, number, 'audio')} />
+                  <GoldButton title="▤ د حدیث PDF فایلونه وټاکئ / نور زیات کړئ" secondary onPress={() => pickAndSaveSittaMedia('hadith', selectedSittaBab.id, number, 'pdf')} />
+                  {getSittaMediaFiles(media, 'audio').map((file, fileIndex) => <View key={file.id || `ha-${fileIndex}`}><Text style={styles.smallMuted}>{file.name || `آډیو ${fileIndex + 1}`}</Text><GoldButton title={`▶ د حدیث آډیو ${fileIndex + 1} واوره`} onPress={() => openSittaMediaFile(file, 'audio', `حدیث ${number}`, `hadith-${selectedSittaBab.id}-${number}`)} /><View style={{ flexDirection: 'row-reverse', gap: 8 }}><GoldButton title="بدلول" secondary onPress={() => pickAndSaveSittaMedia('hadith', selectedSittaBab.id, number, 'audio', file.id)} /><GoldButton title="حذف" secondary onPress={() => Alert.alert('د فایل حذف', 'دا آډیو له دې حدیث څخه لرې شي؟', [{ text: 'نه', style: 'cancel' }, { text: 'هو، حذف', style: 'destructive', onPress: () => removeSittaMediaFile('hadith', selectedSittaBab.id, number, 'audio', file.id) }])} /></View></View>)}
+                  {getSittaMediaFiles(media, 'pdf').map((file, fileIndex) => <View key={file.id || `hp-${fileIndex}`}><Text style={styles.smallMuted}>{file.name || `PDF ${fileIndex + 1}`}</Text><GoldButton title={`▤ د حدیث PDF ${fileIndex + 1} ولوله`} secondary onPress={() => openSittaMediaFile(file, 'pdf', `حدیث ${number}`, `hadith-${selectedSittaBab.id}-${number}`)} /><View style={{ flexDirection: 'row-reverse', gap: 8 }}><GoldButton title="بدلول" secondary onPress={() => pickAndSaveSittaMedia('hadith', selectedSittaBab.id, number, 'pdf', file.id)} /><GoldButton title="حذف" secondary onPress={() => Alert.alert('د فایل حذف', 'دا PDF له دې حدیث څخه لرې شي؟', [{ text: 'نه', style: 'cancel' }, { text: 'هو، حذف', style: 'destructive', onPress: () => removeSittaMediaFile('hadith', selectedSittaBab.id, number, 'pdf', file.id) }])} /></View></View>)}
+                  <Text style={styles.smallMuted}>د دې حدیث لپاره هم څو آډیو او څو PDF فایلونه ثبتولای شئ.</Text>
                   {(selectedSittaBab.audio || getSittaKitabMedia().audio) && Number.isFinite(media.audioStartSeconds) ? <GoldButton title="▶ له عمومي آډیو څخه د دې حدیث ځای واوره" onPress={() => startAudio({ id: `sitta-general-audio-${selectedSittaBab.id}`, title: `${selectedSittaKitab} – حدیث ${number}`, audio: selectedSittaBab.audio || getSittaKitabMedia().audio, scholar: '', section: selectedSittaBook.name }, media.audioStartSeconds * 1000)} /> : null}
                   {(selectedSittaBab.pdf || getSittaKitabMedia().pdf) && media.pdfPage ? <GoldButton title="▤ په عمومي PDF کې د حدیث مخ پرانیزه" secondary onPress={() => openPdf({ id: `sitta-general-pdf-${selectedSittaBab.id}`, title: `${selectedSittaKitab} – حدیث ${number}`, pdf: selectedSittaBab.pdf || getSittaKitabMedia().pdf }, media.pdfPage)} /> : null}
                 </View>
