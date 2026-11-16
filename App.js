@@ -1986,7 +1986,8 @@ export default function App() {
         if (pendingAudioSeekRef.current !== null) {
           const pending = pendingAudioSeekRef.current;
           pendingAudioSeekRef.current = null;
-          if (pending > 0) player.seekTo(pending / 1000).then(() => player.play()).catch(() => player.play());
+          const safePending = mapped.durationMillis > 0 ? Math.min(pending, mapped.durationMillis) : pending;
+          if (safePending > 0) player.seekTo(safePending / 1000).then(() => player.play()).catch(() => player.play());
           else player.play();
           player.setActiveForLockScreen(true, {
             title: item.title || 'میراث اسلام',
@@ -1995,12 +1996,15 @@ export default function App() {
             artworkUrl: Image.resolveAssetSource(require('./assets/mirath-islam-player-artwork.jpg'))?.uri
           }, { showSeekBackward: true, showSeekForward: true });
         }
-        if (endAt != null && mapped.positionMillis >= endAt && !audioFinishHandledRef.current) {
+        const boundedEndAt = endAt != null && mapped.durationMillis > 0
+          ? Math.min(endAt, mapped.durationMillis)
+          : endAt;
+        if (boundedEndAt != null && mapped.positionMillis >= boundedEndAt && !audioFinishHandledRef.current) {
           audioFinishHandledRef.current = true;
           player.pause();
-          player.seekTo(endAt / 1000).catch(() => {});
-          persistAudioProgress(audioItemRef.current, endAt);
-          setAudioStatus(old => ({ ...old, isPlaying: false, positionMillis: endAt }));
+          player.seekTo(boundedEndAt / 1000).catch(() => {});
+          persistAudioProgress(audioItemRef.current, boundedEndAt);
+          setAudioStatus(old => ({ ...old, isPlaying: false, positionMillis: boundedEndAt }));
           return;
         }
         if (mapped.positionMillis - lastProgressSaveRef.current >= 5000) {
@@ -5586,7 +5590,7 @@ export default function App() {
               <GoldButton title="▣ اختیاري ویډیو وټاکئ" secondary onPress={pickVideo} />
               {formVideo ? <Text style={styles.fileSelected}>ویډیو انتخاب شوه ✓</Text> : <Text style={styles.smallMuted}>ویډیو هم اختیاري ده.</Text>}
               <Text style={[styles.cardHeading, { color: settings.headingColor, marginTop: 10 }]}>د فرعي برخې د پیل نقطه (اختیاري)</Text>
-              <Field textColor={settings.textColor} label="د آډیو پیل وخت (ثانیې یا دقیقې:ثانیې)" value={formAudioStartSeconds} onChangeText={setFormAudioStartSeconds} placeholder="تش پرېښودل = له پیل څخه؛ بېلګه 01:35" keyboardType="default" />
+              <SecondsPicker label="د آډیو د پیل وخت (اختیاري)" value={formAudioStartSeconds} onChange={setFormAudioStartSeconds} maximum={24 * 60 * 60} />
               <Field textColor={settings.textColor} label="د PDF د پیل مخ" value={formPdfPage} onChangeText={setFormPdfPage} placeholder="تش پرېښودل = له لومړي مخ څخه" keyboardType="numeric" />
               <Text style={styles.smallMuted}>دا دواړه اختیارونه اختیاري دي؛ که یې تش پرېږدئ، آډیو او PDF له خپل عادي پیل څخه پرانیستل کېږي.</Text>
               <GoldButton title="＋ نور فایلونه یوځای وټاکئ (Word، PowerPoint، انځور، PDF، ویډیو...)" secondary onPress={pickLessonAttachments} />
@@ -5630,7 +5634,7 @@ export default function App() {
                   {resource.kind === 'pdf' && <><Field textColor={settings.textColor} label="د PDF د پیل مخ" value={formSharedResourceSettings[resource.id]?.pdfPage != null ? String(formSharedResourceSettings[resource.id].pdfPage) : ''} onChangeText={value => updateSharedResourceSetting(resource.id, 'pdfPage', value)} placeholder="لکه 25" keyboardType="number-pad" /><Field textColor={settings.textColor} label="د PDF د پای مخ (اختیاري)" value={formSharedResourceSettings[resource.id]?.pdfEndPage != null ? String(formSharedResourceSettings[resource.id].pdfEndPage) : ''} onChangeText={value => updateSharedResourceSetting(resource.id, 'pdfEndPage', value)} placeholder="لکه 40" keyboardType="number-pad" /></>}
                 </View>}
               </View>)}
-              {!sharedResources.length ? <Text style={styles.smallMuted}>تر اوسه ګډ کتابتون تش دی. لومړی یې د ګډ کتابتون له برخې فایلونه ورزیات کړئ.</Text> : null}
+              {!sharedResources.length ? <Text style={styles.smallMuted}>په دې ټاکلې علمي برخه او فولډر کې فایل نشته؛ بله برخه یا فولډر وټاکئ، یا لومړی ګډ کتابتون ته فایل ورزیات کړئ.</Text> : null}
               <Text style={styles.smallMuted}>ټاکل شوي فایلونه: {formSharedResourceIds.length}</Text>
             </View>
             <GoldButton
@@ -5705,7 +5709,7 @@ export default function App() {
               {(selectedItem.sharedResourceIds || []).map(id => {
                 const resource = sharedResources.find(row => row.id === id);
                 if (!resource) return <Text key={id} style={styles.smallMuted}>یوه تړلې سرچینه په کتابتون کې نه موندل کېږي.</Text>;
-                const setting = selectedItem.sharedResourceSettings?.[id] || {}; return <View key={id} style={{ marginBottom: 9 }}><Text style={{ color: COLORS.white, textAlign: 'right' }}>{resource.title} · {resource.section}{resource.folder ? ` · ${resource.folder}` : ''}{resource.subfolder ? ` · ${resource.subfolder}` : ''}</Text><GoldButton title={resource.kind === 'audio' ? `▶ دا آډیو واوره${setting.audioStartSeconds != null ? ` له ${setting.audioStartSeconds} ثانیو` : ''}` : resource.kind === 'pdf' ? `▤ دا PDF ولوله${setting.pdfPage ? ` – مخ ${setting.pdfPage}${setting.pdfEndPage ? ` تر ${setting.pdfEndPage}` : ''}` : ''}` : 'فایل شریک کړه'} secondary onPress={() => resource.kind === 'audio' ? startAudio({ id: `${selectedItem.id}::${resource.id}`, progressKey: `${selectedItem.id}::${resource.id}`, title: resource.title, audio: resource.uri, section: resource.section, scholar: selectedItem.scholar || '', audioStartSeconds: setting.audioStartSeconds, audioEndSeconds: setting.audioEndSeconds }, setting.audioStartSeconds != null ? Number(setting.audioStartSeconds) * 1000 : undefined) : resource.kind === 'pdf' ? openPdf({ id: `${selectedItem.id}::${resource.id}`, title: resource.title, pdf: resource.uri, pdfPageEnd: setting.pdfEndPage || null }, setting.pdfPage || 1) : shareFile(resource.uri, '*/*')} /></View>;
+                const setting = selectedItem.sharedResourceSettings?.[id] || {}; return <View key={id} style={{ marginBottom: 9 }}><Text style={{ color: COLORS.white, textAlign: 'right' }}>{resource.title} · {resource.section}{resource.folder ? ` · ${resource.folder}` : ''}{resource.subfolder ? ` · ${resource.subfolder}` : ''}</Text><GoldButton title={resource.kind === 'audio' ? `▶ دا آډیو واوره${setting.audioStartSeconds != null ? ` له ${setting.audioStartSeconds} ثانیو` : ''}` : resource.kind === 'pdf' ? `▤ دا PDF ولوله${setting.pdfPage ? ` – مخ ${setting.pdfPage}${setting.pdfEndPage ? ` تر ${setting.pdfEndPage}` : ''}` : ''}` : 'فایل شریک کړه'} secondary onPress={() => resource.kind === 'audio' ? startAudio({ id: `${selectedItem.id}::${resource.id}`, progressKey: `${selectedItem.id}::${resource.id}`, title: resource.title, audio: resource.uri, section: resource.section, scholar: selectedItem.scholar || '', audioStartSeconds: setting.audioStartSeconds, audioEndSeconds: setting.audioEndSeconds }, setting.audioStartSeconds != null ? Number(setting.audioStartSeconds) * 1000 : undefined) : resource.kind === 'pdf' ? openPdf({ id: `${selectedItem.id}::${resource.id}`, title: resource.title, pdf: resource.uri, pdfPageEnd: setting.pdfEndPage != null && setting.pdfEndPage !== '' ? Number(setting.pdfEndPage) : null }, setting.pdfPage || 1) : shareFile(resource.uri, '*/*')} /></View>;
               })}
             </View> : null}
 
