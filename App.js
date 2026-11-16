@@ -4,6 +4,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
+  Image,
   ScrollView,
   TouchableOpacity,
   TextInput,
@@ -416,6 +417,24 @@ function Field({
   );
 }
 
+function SecondsPicker({ label, value, onChange, maximum = 24 * 60 * 60 }) {
+  const current = value === '' || value == null ? null : Math.max(0, Number(value) || 0);
+  const shown = current == null ? 'نه دی ټاکل شوی' : `${Math.floor(current / 60)}:${String(current % 60).padStart(2, '0')}`;
+  const change = amount => onChange(Math.max(0, Math.min(maximum, (current == null ? 0 : current) + amount)));
+  return (
+    <View style={{ marginTop: 8, padding: 9, borderRadius: 10, backgroundColor: COLORS.card2 }}>
+      <Text style={{ color: COLORS.white, textAlign: 'right', marginBottom: 7 }}>{label}: <Text style={{ color: COLORS.gold, fontWeight: 'bold' }}>{shown}</Text></Text>
+      <View style={{ flexDirection: 'row-reverse', alignItems: 'center', justifyContent: 'space-around' }}>
+        <TouchableOpacity onPress={() => change(60)} style={{ padding: 9, backgroundColor: COLORS.green, borderRadius: 8 }}><Text style={{ color: COLORS.white }}>+ ۱ دقیقه</Text></TouchableOpacity>
+        <TouchableOpacity onPress={() => change(1)} style={{ padding: 9, backgroundColor: COLORS.green, borderRadius: 8 }}><Text style={{ color: COLORS.white }}>+ ۱ ثانیه</Text></TouchableOpacity>
+        <TouchableOpacity onPress={() => change(-1)} style={{ padding: 9, backgroundColor: COLORS.card3, borderRadius: 8 }}><Text style={{ color: COLORS.white }}>− ۱ ثانیه</Text></TouchableOpacity>
+        <TouchableOpacity onPress={() => change(-60)} style={{ padding: 9, backgroundColor: COLORS.card3, borderRadius: 8 }}><Text style={{ color: COLORS.white }}>− ۱ دقیقه</Text></TouchableOpacity>
+      </View>
+      <TouchableOpacity onPress={() => onChange('')} style={{ alignSelf: 'flex-end', paddingTop: 7 }}><Text style={{ color: COLORS.muted }}>پاکول / اختیاري</Text></TouchableOpacity>
+    </View>
+  );
+}
+
 export default function App() {
 
   // ------------------------------------------------
@@ -448,6 +467,10 @@ export default function App() {
   const [sharedResources, setSharedResources] = useState([]);
   const [formSharedResourceIds, setFormSharedResourceIds] = useState([]);
   const [formSharedResourceSettings, setFormSharedResourceSettings] = useState({});
+  const [sharedBrowserSection, setSharedBrowserSection] = useState('');
+  const [sharedBrowserFolder, setSharedBrowserFolder] = useState('');
+  const [sharedBrowserSubfolder, setSharedBrowserSubfolder] = useState('');
+  const [showSharedBrowser, setShowSharedBrowser] = useState(false);
   const [sharedResourceTitle, setSharedResourceTitle] = useState('');
   const [sharedResourceKind, setSharedResourceKind] = useState('audio');
   const [sharedResourceSection, setSharedResourceSection] = useState(SECTIONS[0]);
@@ -1045,6 +1068,10 @@ export default function App() {
     setFormLinkedPdfPage('');
     setFormSharedResourceIds([]);
     setFormSharedResourceSettings({});
+    setSharedBrowserSection('');
+    setSharedBrowserFolder('');
+    setSharedBrowserSubfolder('');
+    setShowSharedBrowser(false);
     setFormLanguage('پښتو');
     setFormMadhhab('');
     setFormResourceType('درس');
@@ -1585,7 +1612,7 @@ export default function App() {
 
   function toggleSharedResourceLink(id) {
     setFormSharedResourceIds(old => old.includes(id) ? old.filter(value => value !== id) : [...old, id]);
-    setFormSharedResourceSettings(old => ({ ...old, [id]: old[id] || { audioStartSeconds: '', pdfPage: '' } }));
+    setFormSharedResourceSettings(old => ({ ...old, [id]: old[id] || { audioStartSeconds: '', audioEndSeconds: '', pdfPage: '', pdfEndPage: '' } }));
   }
 
   function updateSharedResourceSetting(id, field, value) {
@@ -1740,12 +1767,16 @@ export default function App() {
     for (const resourceId of formSharedResourceIds) {
       const setting = formSharedResourceSettings[resourceId] || {};
       const audioStartSeconds = parseOptionalSharedAudioStart(setting.audioStartSeconds);
+      const audioEndSeconds = parseOptionalSharedAudioStart(setting.audioEndSeconds);
       const pdfPageRaw = String(setting.pdfPage || '').trim();
       const pdfPage = pdfPageRaw ? Number(pdfPageRaw) : null;
+      const pdfEndPageRaw = String(setting.pdfEndPage || '').trim();
+      const pdfEndPage = pdfEndPageRaw ? Number(pdfEndPageRaw) : null;
       const resource = sharedResources.find(row => row.id === resourceId);
-      if (Number.isNaN(audioStartSeconds)) { Alert.alert('ناسم آډیو وخت', `د «${resource?.title || 'فایل'}» وخت په ثانیو یا دقیقې:ثانیې ولیکئ.`); return; }
+      if (Number.isNaN(audioStartSeconds) || Number.isNaN(audioEndSeconds) || (audioStartSeconds != null && audioEndSeconds != null && audioEndSeconds <= audioStartSeconds)) { Alert.alert('ناسم آډیو وخت', `د «${resource?.title || 'فایل'}» د پیل او پای وختونه سم وټاکئ؛ پای باید له پیل وروسته وي.`); return; }
       if (pdfPageRaw && (!Number.isInteger(pdfPage) || pdfPage < 1)) { Alert.alert('ناسم PDF مخ', `د «${resource?.title || 'فایل'}» د PDF مخ مثبته شمېره ولیکئ.`); return; }
-      parsedSharedResourceSettings[resourceId] = { audioStartSeconds, pdfPage };
+      if (pdfEndPageRaw && (!Number.isInteger(pdfEndPage) || pdfEndPage < 1 || (pdfPage != null && pdfEndPage < pdfPage))) { Alert.alert('ناسم PDF مخ', `د «${resource?.title || 'فایل'}» پای مخ باید د پیل له مخ سره برابر یا ترې وروسته وي.`); return; }
+      parsedSharedResourceSettings[resourceId] = { audioStartSeconds, audioEndSeconds, pdfPage, pdfEndPage };
     }
 
     const newItem = {
@@ -1890,7 +1921,7 @@ export default function App() {
   async function persistAudioProgress(item, positionMillis) {
     if (!item?.id) return;
     try {
-      const resourceId = String(item.id).split('::')[0];
+      const resourceId = item.progressKey || String(item.id).split('::')[0];
       const progress = {
         resourceId, title: item.title || '', uri: item.audio,
         positionMillis: Math.max(0, Math.floor(positionMillis || 0)),
@@ -1922,13 +1953,15 @@ export default function App() {
       audioQueueRef.current = getAudioQueue();
       audioFinishHandledRef.current = false;
       let startAt = Number.isFinite(requestedPosition) ? requestedPosition : Math.max(0, Number(item.audioStartSeconds || 0)) * 1000;
+      const endAt = item.audioEndSeconds == null || item.audioEndSeconds === '' ? null : Math.max(0, Number(item.audioEndSeconds)) * 1000;
       if (!Number.isFinite(requestedPosition)) {
         const saved = await AsyncStorage.getItem(STORAGE.audioProgress);
         if (saved) {
           const stored = JSON.parse(saved);
-          const progressKey = String(item.id).split('::')[0];
+          const progressKey = item.progressKey || String(item.id).split('::')[0];
           const progress = stored?.[progressKey] || (stored?.resourceId === progressKey ? stored : null);
           if (progress && (!progress.uri || progress.uri === item.audio)) startAt = progress.positionMillis || 0;
+          if (endAt != null && startAt >= endAt) startAt = Math.max(0, Number(item.audioStartSeconds || 0)) * 1000;
         }
       }
       await setAudioModeAsync({
@@ -1936,6 +1969,7 @@ export default function App() {
         shouldPlayInBackground: true,
         interruptionMode: 'doNotMix'
       });
+      if (endAt != null && (!Number.isFinite(endAt) || endAt <= startAt)) { Alert.alert('ناسم وخت', 'د آډیو پای وخت باید د پیل له وخت څخه وروسته وي.'); return; }
       pendingAudioSeekRef.current = startAt;
       const player = createAudioPlayer(item.audio, { updateInterval: 500, downloadFirst: false });
       audioSoundRef.current = player;
@@ -1957,8 +1991,17 @@ export default function App() {
           player.setActiveForLockScreen(true, {
             title: item.title || 'میراث اسلام',
             artist: item.scholar || 'میراث اسلام',
-            albumTitle: item.section || 'د علمي بیانونو کتابتون'
+            albumTitle: item.section || 'د علمي بیانونو کتابتون',
+            artworkUrl: Image.resolveAssetSource(require('./assets/mirath-islam-player-artwork.jpg'))?.uri
           }, { showSeekBackward: true, showSeekForward: true });
+        }
+        if (endAt != null && mapped.positionMillis >= endAt && !audioFinishHandledRef.current) {
+          audioFinishHandledRef.current = true;
+          player.pause();
+          player.seekTo(endAt / 1000).catch(() => {});
+          persistAudioProgress(audioItemRef.current, endAt);
+          setAudioStatus(old => ({ ...old, isPlaying: false, positionMillis: endAt }));
+          return;
         }
         if (mapped.positionMillis - lastProgressSaveRef.current >= 5000) {
           lastProgressSaveRef.current = mapped.positionMillis;
@@ -5562,18 +5605,32 @@ export default function App() {
 
             <View style={styles.formCard}>
               <Text style={[styles.cardHeading, { color: settings.headingColor }]}>له ګډ علمي کتابتون څخه سرچینې ونښلوئ</Text>
-              <Text style={styles.smallMuted}>دا سرچینې د قرآن، حدیث، فقه، عقیدې او نورو علمي برخو لپاره ګډې دي. یوازې هغه فایلونه وټاکئ چې همدې درس ته اړوند وي؛ فایل بیا نه کاپي کېږي.</Text>
-              {sharedResources.map(resource => <View key={resource.id} style={{ paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: COLORS.border }}>
+              <Text style={styles.smallMuted}>لومړی علمي برخه، بیا فولډر او په پای کې اړوند فایل وټاکئ. فایل یوازې لینک کېږي؛ کاپي نه جوړېږي.</Text>
+              <GoldButton title={showSharedBrowser ? 'د ګډ کتابتون انتخاب پټ کړه' : '📚 له ګډ کتابتون څخه انتخاب'} secondary onPress={() => { setShowSharedBrowser(v => !v); setSharedBrowserSection(''); setSharedBrowserFolder(''); setSharedBrowserSubfolder(''); }} />
+              {showSharedBrowser && <View style={{ marginTop: 8 }}>
+                <Text style={{ color: COLORS.gold, textAlign: 'right', marginBottom: 6 }}>۱ ـ علمي برخه وټاکئ</Text>
+                <View style={{ flexDirection: 'row-reverse', flexWrap: 'wrap' }}>{SECTIONS.map(section => <TouchableOpacity key={section} onPress={() => { setSharedBrowserSection(section); setSharedBrowserFolder(''); setSharedBrowserSubfolder(''); }} style={{ padding: 8, margin: 3, borderRadius: 8, backgroundColor: sharedBrowserSection === section ? COLORS.green : COLORS.card2 }}><Text style={{ color: COLORS.white }}>{section}</Text></TouchableOpacity>)}</View>
+                {!!sharedBrowserSection && <>
+                  <Text style={{ color: COLORS.gold, textAlign: 'right', marginVertical: 7 }}>۲ ـ فولډر وټاکئ</Text>
+                  <View style={{ flexDirection: 'row-reverse', flexWrap: 'wrap' }}>{[...new Set(sharedResources.filter(r => r.section === sharedBrowserSection).map(r => r.folder || 'عمومي فایلونه'))].map(folder => <TouchableOpacity key={folder} onPress={() => { setSharedBrowserFolder(folder); setSharedBrowserSubfolder(''); }} style={{ padding: 8, margin: 3, borderRadius: 8, backgroundColor: sharedBrowserFolder === folder ? COLORS.green : COLORS.card2 }}><Text style={{ color: COLORS.white }}>{folder}</Text></TouchableOpacity>)}</View>
+                </>}
+                {!!sharedBrowserFolder && <>
+                  <Text style={{ color: COLORS.gold, textAlign: 'right', marginVertical: 7 }}>۳ ـ فرعي فولډر وټاکئ</Text>
+                  <View style={{ flexDirection: 'row-reverse', flexWrap: 'wrap' }}>{[...new Set(sharedResources.filter(r => r.section === sharedBrowserSection && (r.folder || 'عمومي فایلونه') === sharedBrowserFolder).map(r => r.subfolder || 'عمومي'))].map(subfolder => <TouchableOpacity key={subfolder} onPress={() => setSharedBrowserSubfolder(subfolder)} style={{ padding: 8, margin: 3, borderRadius: 8, backgroundColor: sharedBrowserSubfolder === subfolder ? COLORS.green : COLORS.card2 }}><Text style={{ color: COLORS.white }}>{subfolder}</Text></TouchableOpacity>)}</View>
+                </>}
+                {!!sharedBrowserSubfolder && <Text style={{ color: COLORS.gold, textAlign: 'right', marginVertical: 7 }}>۴ ـ فایلونه وټاکئ</Text>}
+              </View>}
+              {(showSharedBrowser && sharedBrowserSection && sharedBrowserFolder && sharedBrowserSubfolder ? sharedResources.filter(r => r.section === sharedBrowserSection && (r.folder || 'عمومي فایلونه') === sharedBrowserFolder && (r.subfolder || 'عمومي') === sharedBrowserSubfolder) : []).map(resource => <View key={resource.id} style={{ paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: COLORS.border }}>
                 <TouchableOpacity onPress={() => toggleSharedResourceLink(resource.id)} style={{ flexDirection: 'row-reverse', alignItems: 'center' }}>
                   <Ionicons name={formSharedResourceIds.includes(resource.id) ? 'checkbox' : 'square-outline'} size={21} color={COLORS.gold} />
-                  <View style={{ flex: 1, marginRight: 8 }}><Text style={{ color: COLORS.white, textAlign: 'right' }}>{resource.title}</Text><Text style={styles.smallMuted}>{resource.section}{resource.folder ? ` · ${resource.folder}` : ''}{resource.subfolder ? ` · ${resource.subfolder}` : ''} · {resource.kind === 'audio' ? 'آډیو' : resource.kind === 'pdf' ? 'PDF' : 'فایل'} · {formatFileSize(resource.size)}</Text></View>
+                  <View style={{ flex: 1, marginRight: 8 }}><Text style={{ color: COLORS.white, textAlign: 'right' }}>{resource.title}</Text><Text style={styles.smallMuted}>{resource.section}{resource.folder ? ` · ${resource.folder}` : ''}{resource.subfolder ? ` · ${resource.subfolder}` : ''} · {resource.kind === 'audio' ? 'آډیو' : resource.kind === 'pdf' ? 'PDF' : 'فایل'}</Text></View>
                 </TouchableOpacity>
                 {formSharedResourceIds.includes(resource.id) && <View style={{ marginTop: 7, paddingHorizontal: 8 }}>
-                  {resource.kind === 'audio' && <Field textColor={settings.textColor} label="د همدې آډیو د پیل نقطه (ثانیې یا mm:ss)" value={formSharedResourceSettings[resource.id]?.audioStartSeconds != null ? String(formSharedResourceSettings[resource.id].audioStartSeconds) : ''} onChangeText={value => updateSharedResourceSetting(resource.id, 'audioStartSeconds', value)} placeholder="لکه 01:25" />}
-                  {resource.kind === 'pdf' && <Field textColor={settings.textColor} label="د همدې PDF د پیل صفحه" value={formSharedResourceSettings[resource.id]?.pdfPage != null ? String(formSharedResourceSettings[resource.id].pdfPage) : ''} onChangeText={value => updateSharedResourceSetting(resource.id, 'pdfPage', value)} placeholder="لکه 25" keyboardType="number-pad" />}
+                  {resource.kind === 'audio' && <><SecondsPicker label="د آډیو پیل" value={formSharedResourceSettings[resource.id]?.audioStartSeconds ?? ''} onChange={value => updateSharedResourceSetting(resource.id, 'audioStartSeconds', value)} maximum={Math.max(0, Number(resource.durationSeconds || 86400))} /><SecondsPicker label="د آډیو پای (اختیاري)" value={formSharedResourceSettings[resource.id]?.audioEndSeconds ?? ''} onChange={value => updateSharedResourceSetting(resource.id, 'audioEndSeconds', value)} maximum={Math.max(0, Number(resource.durationSeconds || 86400))} /></>}
+                  {resource.kind === 'pdf' && <><Field textColor={settings.textColor} label="د PDF د پیل مخ" value={formSharedResourceSettings[resource.id]?.pdfPage != null ? String(formSharedResourceSettings[resource.id].pdfPage) : ''} onChangeText={value => updateSharedResourceSetting(resource.id, 'pdfPage', value)} placeholder="لکه 25" keyboardType="number-pad" /><Field textColor={settings.textColor} label="د PDF د پای مخ (اختیاري)" value={formSharedResourceSettings[resource.id]?.pdfEndPage != null ? String(formSharedResourceSettings[resource.id].pdfEndPage) : ''} onChangeText={value => updateSharedResourceSetting(resource.id, 'pdfEndPage', value)} placeholder="لکه 40" keyboardType="number-pad" /></>}
                 </View>}
               </View>)}
-              {!sharedResources.length ? <Text style={styles.smallMuted}>تر اوسه ګډ کتابتون تش دی. لومړی یې د کورپاڼې له ګډ کتابتون څخه فایلونه ورزیات کړئ.</Text> : null}
+              {!sharedResources.length ? <Text style={styles.smallMuted}>تر اوسه ګډ کتابتون تش دی. لومړی یې د ګډ کتابتون له برخې فایلونه ورزیات کړئ.</Text> : null}
               <Text style={styles.smallMuted}>ټاکل شوي فایلونه: {formSharedResourceIds.length}</Text>
             </View>
             <GoldButton
@@ -5648,7 +5705,7 @@ export default function App() {
               {(selectedItem.sharedResourceIds || []).map(id => {
                 const resource = sharedResources.find(row => row.id === id);
                 if (!resource) return <Text key={id} style={styles.smallMuted}>یوه تړلې سرچینه په کتابتون کې نه موندل کېږي.</Text>;
-                const setting = selectedItem.sharedResourceSettings?.[id] || {}; return <View key={id} style={{ marginBottom: 9 }}><Text style={{ color: COLORS.white, textAlign: 'right' }}>{resource.title} · {resource.section}{resource.folder ? ` · ${resource.folder}` : ''}{resource.subfolder ? ` · ${resource.subfolder}` : ''}</Text><GoldButton title={resource.kind === 'audio' ? `▶ دا آډیو واوره${setting.audioStartSeconds != null ? ` له ${setting.audioStartSeconds} ثانیو` : ''}` : resource.kind === 'pdf' ? `▤ دا PDF ولوله${setting.pdfPage ? ` – مخ ${setting.pdfPage}` : ''}` : 'فایل شریک کړه'} secondary onPress={() => resource.kind === 'audio' ? startAudio({ id: resource.id, title: resource.title, audio: resource.uri, section: resource.section, scholar: selectedItem.scholar || '' }, (setting.audioStartSeconds || 0) * 1000) : resource.kind === 'pdf' ? openPdf({ id: resource.id, title: resource.title, pdf: resource.uri }, setting.pdfPage || 1) : shareFile(resource.uri, '*/*')} /></View>;
+                const setting = selectedItem.sharedResourceSettings?.[id] || {}; return <View key={id} style={{ marginBottom: 9 }}><Text style={{ color: COLORS.white, textAlign: 'right' }}>{resource.title} · {resource.section}{resource.folder ? ` · ${resource.folder}` : ''}{resource.subfolder ? ` · ${resource.subfolder}` : ''}</Text><GoldButton title={resource.kind === 'audio' ? `▶ دا آډیو واوره${setting.audioStartSeconds != null ? ` له ${setting.audioStartSeconds} ثانیو` : ''}` : resource.kind === 'pdf' ? `▤ دا PDF ولوله${setting.pdfPage ? ` – مخ ${setting.pdfPage}${setting.pdfEndPage ? ` تر ${setting.pdfEndPage}` : ''}` : ''}` : 'فایل شریک کړه'} secondary onPress={() => resource.kind === 'audio' ? startAudio({ id: `${selectedItem.id}::${resource.id}`, progressKey: `${selectedItem.id}::${resource.id}`, title: resource.title, audio: resource.uri, section: resource.section, scholar: selectedItem.scholar || '', audioStartSeconds: setting.audioStartSeconds, audioEndSeconds: setting.audioEndSeconds }, setting.audioStartSeconds != null ? Number(setting.audioStartSeconds) * 1000 : undefined) : resource.kind === 'pdf' ? openPdf({ id: `${selectedItem.id}::${resource.id}`, title: resource.title, pdf: resource.uri, pdfPageEnd: setting.pdfEndPage || null }, setting.pdfPage || 1) : shareFile(resource.uri, '*/*')} /></View>;
               })}
             </View> : null}
 
@@ -5851,6 +5908,7 @@ export default function App() {
           <ScrollView contentContainerStyle={styles.pageContent} keyboardShouldPersistTaps="always" keyboardDismissMode="none">
             <PageHeader title={t("د بیان اورېدل")} subtitle={audioItemRef.current?.scholar || 'آډیو پلیر'} onBack={goBack} />
             <View style={styles.audioPlayerCard}>
+              <Image source={require('./assets/mirath-islam-player-artwork.jpg')} style={{ width: 190, height: 190, alignSelf: 'center', borderRadius: 18, marginBottom: 16 }} resizeMode="cover" />
               <Text style={styles.audioPlayerTitle}>{audioItemRef.current?.title || selectedItem?.title || 'بیان'}</Text>
               <Text style={styles.audioPlayerMeta}>{audioItemRef.current?.scholar || ''}</Text>
               <TouchableOpacity
@@ -5906,7 +5964,7 @@ export default function App() {
             <View style={styles.pdfHeader}>
               <TouchableOpacity onPress={goBack} style={styles.pdfHeaderButton}><Text style={styles.pdfHeaderButtonText}>→ شاته</Text></TouchableOpacity>
               <Text numberOfLines={1} style={styles.pdfHeaderTitle}>{selectedItem?.title || 'کتاب'}</Text>
-              <Text style={styles.pdfPageCounter}>{pdfCurrentPage}/{pdfTotalPages || '—'}</Text>
+              <Text style={styles.pdfPageCounter}>{pdfCurrentPage}{selectedItem?.pdfPageEnd ? `–${selectedItem.pdfPageEnd}` : ''}/{pdfTotalPages || '—'}</Text>
             </View>
             <View style={styles.pdfViewerWrap}>
               {selectedItem?.pdf ? (
@@ -5916,6 +5974,11 @@ export default function App() {
                   page={pdfInitialPage}
                   onLoadComplete={(numberOfPages) => setPdfTotalPages(numberOfPages)}
                   onPageChanged={(page) => {
+                    if (selectedItem?.pdfPageEnd && page > Number(selectedItem.pdfPageEnd)) {
+                      setPdfInitialPage(Number(selectedItem.pdfPageEnd));
+                      setPdfCurrentPage(Number(selectedItem.pdfPageEnd));
+                      return;
+                    }
                     setPdfCurrentPage(page);
                     persistPdfProgress(selectedItem, page);
                   }}
