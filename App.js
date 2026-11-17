@@ -26,6 +26,7 @@ import * as Notifications from 'expo-notifications';
 import * as Location from 'expo-location';
 import { createAudioPlayer, setAudioModeAsync } from 'expo-audio';
 import * as FileSystem from 'expo-file-system/legacy';
+import * as Crypto from 'expo-crypto';
 import Pdf from 'react-native-pdf';
 import { Ionicons } from '@expo/vector-icons';
 
@@ -418,17 +419,24 @@ function Field({
 }
 
 function SecondsPicker({ label, value, onChange, maximum = 24 * 60 * 60 }) {
-  const current = value === '' || value == null ? null : Math.max(0, Number(value) || 0);
+  const current = value === '' || value == null ? null : Math.max(0, Math.floor(Number(value) || 0));
   const shown = current == null ? 'نه دی ټاکل شوی' : `${Math.floor(current / 60)}:${String(current % 60).padStart(2, '0')}`;
-  const change = amount => onChange(Math.max(0, Math.min(maximum, (current == null ? 0 : current) + amount)));
+  const change = amount => onChange(Math.max(0, Math.min(Math.floor(maximum), (current == null ? 0 : current) + amount)));
+  const stepButton = (title, amount, positive = false) => (
+    <TouchableOpacity onPress={() => change(amount)} style={{ minWidth: '22%', paddingVertical: 8, paddingHorizontal: 4, margin: 2, alignItems: 'center', backgroundColor: positive ? COLORS.green : COLORS.card3, borderRadius: 8 }}>
+      <Text style={{ color: COLORS.white, fontSize: 12, fontWeight: '600' }}>{title}</Text>
+    </TouchableOpacity>
+  );
   return (
     <View style={{ marginTop: 8, padding: 9, borderRadius: 10, backgroundColor: COLORS.card2 }}>
-      <Text style={{ color: COLORS.white, textAlign: 'right', marginBottom: 7 }}>{label}: <Text style={{ color: COLORS.gold, fontWeight: 'bold' }}>{shown}</Text></Text>
-      <View style={{ flexDirection: 'row-reverse', alignItems: 'center', justifyContent: 'space-around' }}>
-        <TouchableOpacity onPress={() => change(60)} style={{ padding: 9, backgroundColor: COLORS.green, borderRadius: 8 }}><Text style={{ color: COLORS.white }}>+ ۱ دقیقه</Text></TouchableOpacity>
-        <TouchableOpacity onPress={() => change(1)} style={{ padding: 9, backgroundColor: COLORS.green, borderRadius: 8 }}><Text style={{ color: COLORS.white }}>+ ۱ ثانیه</Text></TouchableOpacity>
-        <TouchableOpacity onPress={() => change(-1)} style={{ padding: 9, backgroundColor: COLORS.card3, borderRadius: 8 }}><Text style={{ color: COLORS.white }}>− ۱ ثانیه</Text></TouchableOpacity>
-        <TouchableOpacity onPress={() => change(-60)} style={{ padding: 9, backgroundColor: COLORS.card3, borderRadius: 8 }}><Text style={{ color: COLORS.white }}>− ۱ دقیقه</Text></TouchableOpacity>
+      <Text style={{ color: COLORS.white, textAlign: 'right', marginBottom: 7 }}>{label}: <Text style={{ color: COLORS.gold, fontWeight: 'bold', fontSize: 17 }}>{shown}</Text></Text>
+      <Text style={{ color: COLORS.muted, textAlign: 'right', fontSize: 11, marginBottom: 3 }}>دقیقې</Text>
+      <View style={{ flexDirection: 'row-reverse', flexWrap: 'wrap', justifyContent: 'space-between' }}>
+        {stepButton('− ۱۰ دقیقې', -600)}{stepButton('− ۱ دقیقه', -60)}{stepButton('+ ۱ دقیقه', 60, true)}{stepButton('+ ۱۰ دقیقې', 600, true)}
+      </View>
+      <Text style={{ color: COLORS.muted, textAlign: 'right', fontSize: 11, marginTop: 5, marginBottom: 3 }}>ثانیې</Text>
+      <View style={{ flexDirection: 'row-reverse', flexWrap: 'wrap', justifyContent: 'space-between' }}>
+        {stepButton('− ۱۰ ثانیې', -10)}{stepButton('− ۱ ثانیه', -1)}{stepButton('+ ۱ ثانیه', 1, true)}{stepButton('+ ۱۰ ثانیې', 10, true)}
       </View>
       <TouchableOpacity onPress={() => onChange('')} style={{ alignSelf: 'flex-end', paddingTop: 7 }}><Text style={{ color: COLORS.muted }}>پاکول / اختیاري</Text></TouchableOpacity>
     </View>
@@ -1556,6 +1564,105 @@ export default function App() {
     await saveData(STORAGE.sharedResources, rows);
   }
 
+  // د ګډ کتابتون د فایلونو د تکرار پېژندنه: SHA-256 د فایل د منځپانګې پر بنسټ.
+  async function getSharedResourceFingerprint(resource) {
+    const size = Number(resource?.size || 0);
+    const kind = resource?.kind || 'other';
+    const uri = resource?.uri || '';
+    if (resource?.sha256) return { type: 'content', value: resource.sha256 };
+    // د ډېر لوی فایل د لوستلو له امله د حافظې د ډکېدو مخنیوی؛ تر 50MB پورې بشپړ hash.
+    if (uri && size > 0 && size <= 50 * 1024 * 1024) {
+      try {
+        const info = await FileSystem.getInfoAsync(uri);
+        if (info?.exists) {
+          const base64 = await FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.Base64 });
+          const sha256 = await Crypto.digestStringAsync(Crypto.CryptoDigestAlgorithm.SHA256, base64);
+          return { type: 'content', value: sha256 };
+        }
+      } catch (error) {
+        // که فایل د لاسرسي وړ نه وي، لاندې د نوم او اندازې له مخې احتمالي پرتله کېږي.
+      }
+    }
+    const rawName = String(resource?.originalName || resource?.title || '').trim().toLowerCase();
+    const normalizedName = rawName.normalize ? rawName.normalize('NFKC').replace(/[\s._-]+/g, '') : rawName.replace(/[\s._-]+/g, '');
+    if (normalizedName && size > 0) return { type: 'metadata', value: `${kind}|${size}|${normalizedName}` };
+    return null;
+  }
+
+  async function scanSharedResourceDuplicates() {
+    if (sharedResources.length < 2) {
+      Alert.alert('د تکراري فایلونو پلټنه', 'په ګډ کتابتون کې د پرتله کولو لپاره لږ تر لږه دوه فایلونه پکار دي.');
+      return;
+    }
+    try {
+      const fingerprints = [];
+      const updatedRows = [];
+      for (const resource of sharedResources) {
+        const fingerprint = await getSharedResourceFingerprint(resource);
+        fingerprints.push({ resource, fingerprint });
+        updatedRows.push(fingerprint?.type === 'content' ? { ...resource, sha256: fingerprint.value } : resource);
+      }
+      // hash د راتلونکو پلټنو لپاره ساتل کېږي؛ د پخوانیو فایلونو URI او ID نه بدلېږي.
+      if (updatedRows.some((row, i) => row.sha256 !== sharedResources[i]?.sha256)) {
+        await saveSharedResources(updatedRows);
+      }
+      const groups = [];
+      const used = new Set();
+      for (let i = 0; i < fingerprints.length; i++) {
+        if (used.has(i) || !fingerprints[i].fingerprint) continue;
+        const matches = [];
+        for (let j = i + 1; j < fingerprints.length; j++) {
+          if (used.has(j) || !fingerprints[j].fingerprint) continue;
+          const a = fingerprints[i].fingerprint;
+          const b = fingerprints[j].fingerprint;
+          if (a.type === b.type && a.value === b.value && fingerprints[i].resource.kind === fingerprints[j].resource.kind) {
+            matches.push(fingerprints[j].resource);
+            used.add(j);
+          }
+        }
+        if (matches.length) {
+          used.add(i);
+          groups.push({ first: fingerprints[i].resource, matches, exact: fingerprints[i].fingerprint.type === 'content' });
+        }
+      }
+      if (!groups.length) {
+        Alert.alert('د پلټنې پایله', 'د ګډ کتابتون په فایلونو کې تکراري فایل ونه موندل شو.');
+        return;
+      }
+      const lines = groups.map((group, index) => {
+        const names = [group.first, ...group.matches].map(row => `${row.title || row.originalName || 'بې نومه'} (${formatFileSize(row.size)})`).join(' ↔ ');
+        return `${index + 1}. ${group.exact ? 'د منځپانګې له مخې یو شان' : 'احتمالي تکرار'}: ${names}`;
+      });
+      Alert.alert('تکراري فایلونه وموندل شول', `د تکرار ډلې: ${groups.length}\n\n${lines.slice(0, 8).join('\n\n')}${lines.length > 8 ? `\n\n... او ${lines.length - 8} نورې ډلې` : ''}\n\nهیڅ فایل په اتومات ډول نه دی حذف شوی.`);
+    } catch (error) {
+      Alert.alert('د پلټنې ستونزه', 'فایلونه په بشپړ ډول پرتله نه شول. مهرباني وکړئ بیا هڅه وکړئ.');
+    }
+  }
+
+  function countSharedResourceReferences(value, resourceId) {
+    let count = 0;
+    const walk = node => {
+      if (!node || typeof node !== 'object') return;
+      if (Array.isArray(node)) { node.forEach(walk); return; }
+      if (Array.isArray(node.sharedResourceIds) && node.sharedResourceIds.includes(resourceId)) count += 1;
+      Object.entries(node).forEach(([key, child]) => { if (key !== 'sharedResourceIds') walk(child); });
+    };
+    walk(value);
+    return count;
+  }
+
+  function showSharedLibraryUsageReport() {
+    const rows = sharedResources.map(resource => {
+      const lessons = globalItems.filter(item => (item.sharedResourceIds || []).includes(resource.id));
+      const hadith = countSharedResourceReferences(sittaData || {}, resource.id);
+      return { resource, lessons, hadith, total: lessons.length + hadith };
+    });
+    const used = rows.filter(row => row.total > 0);
+    const unused = rows.filter(row => row.total === 0);
+    const lines = rows.map((row, index) => `${index + 1}. ${row.resource.title || row.resource.originalName || 'بې نومه'} — ټول ${row.total} تړاوونه (درسونه: ${row.lessons.length}، حدیثي برخې: ${row.hadith})`);
+    Alert.alert('د ګډ کتابتون عمومي راپور', `ټول فایلونه: ${rows.length}\nکارول شوي فایلونه: ${used.length}\nنه کارول شوي فایلونه: ${unused.length}\nټول تړاوونه: ${rows.reduce((sum, row) => sum + row.total, 0)}\n\n${lines.slice(0, 12).join('\n')}${lines.length > 12 ? `\n... او ${lines.length - 12} نور فایلونه` : ''}${unused.length ? `\n\nنه کارول شوي: ${unused.slice(0, 8).map(row => row.resource.title || row.resource.originalName || 'بې نومه').join('، ')}` : ''}`);
+  }
+
   async function addSharedAcademicResource() {
     try {
       const kind = sharedResourceKind;
@@ -1566,7 +1673,10 @@ export default function App() {
         const uri = await keepPickedFile(asset, `shared-${kind}`);
         const guessed = String(asset.name || '');
         const title = (sharedResourceTitle.trim() && picked.assets.length === 1) ? sharedResourceTitle.trim() : guessed.replace(/\.[^.]+$/, '') || 'بې نومه سرچینه';
-        additions.push({ id: `shared-${Date.now()}-${Math.random().toString(36).slice(2,8)}`, title, uri, kind, originalName: guessed, size: Number(asset.size || 0), durationSeconds: kind === 'audio' ? (Number(asset.duration) || await readAudioDurationSeconds(uri)) : null, section: sharedResourceSection, folder: sharedResourceFolder || '', folderParent: sharedResourceSubfolder ? (sharedResourceFolder || '') : '', subfolder: sharedResourceSubfolder || '', createdAt: new Date().toISOString() });
+        const newResource = { id: `shared-${Date.now()}-${Math.random().toString(36).slice(2,8)}`, title, uri, kind, originalName: guessed, size: Number(asset.size || 0), durationSeconds: kind === 'audio' ? (Number(asset.duration) || await readAudioDurationSeconds(uri)) : null, section: sharedResourceSection, folder: sharedResourceFolder || '', folderParent: sharedResourceSubfolder ? (sharedResourceFolder || '') : '', subfolder: sharedResourceSubfolder || '', createdAt: new Date().toISOString() };
+        const fingerprint = await getSharedResourceFingerprint(newResource);
+        if (fingerprint?.type === 'content') newResource.sha256 = fingerprint.value;
+        additions.push(newResource);
       }
       await saveSharedResources([...additions, ...sharedResources]);
       setSharedResourceTitle('');
@@ -1593,6 +1703,36 @@ export default function App() {
     ]);
   }
 
+  function showSharedResourceUsage(resource) {
+    const linkedLessons = globalItems.filter(item => (item.sharedResourceIds || []).includes(resource.id));
+    const hadithMatches = [];
+    const walk = (value, path = 'حدیثي کتابتون') => {
+      if (!value || typeof value !== 'object') return;
+      if (Array.isArray(value)) {
+        value.forEach((entry, index) => walk(entry, `${path} · ${index + 1}`));
+        return;
+      }
+      if (Array.isArray(value.sharedResourceIds) && value.sharedResourceIds.includes(resource.id)) {
+        const label = [value.bookTitle, value.kitabTitle, value.babTitle, value.title, value.name, value.number != null ? `حدیث ${value.number}` : ''].filter(Boolean).join(' · ');
+        hadithMatches.push(label || path);
+      }
+      Object.entries(value).forEach(([key, child]) => {
+        if (key !== 'sharedResourceIds') walk(child, `${path} · ${key}`);
+      });
+    };
+    walk(sittaData || {});
+    const lines = [];
+    linkedLessons.forEach((item, index) => {
+      lines.push(`${index + 1}. ${item.title || 'بې نومه درس'} — ${item.scholar || 'عالم نه دی ټاکل شوی'} (${item.section || 'برخه نه ده ثبت شوې'})`);
+    });
+    hadithMatches.forEach((label, index) => lines.push(`حدیثي تړاو ${index + 1}: ${label}`));
+    const total = linkedLessons.length + hadithMatches.length;
+    Alert.alert(
+      'د فایل د کارونې راپور',
+      `${resource.title}\n\nټول تړاوونه: ${total}\nپه درسونو کې: ${linkedLessons.length}\nپه حدیثي برخو کې: ${hadithMatches.length}\n\n${lines.length ? lines.slice(0, 12).join('\n') + (lines.length > 12 ? `\n... او ${lines.length - 12} نور تړاوونه` : '') : 'دا فایل تر اوسه له کوم درس یا حدیثي برخې سره نه دی تړل شوی.'}`
+    );
+  }
+
   async function replaceSharedAcademicResource(resource) {
     try {
       const picked = await DocumentPicker.getDocumentAsync({ type: resource.kind === 'audio' ? ['audio/*'] : (resource.kind === 'pdf' ? 'application/pdf' : '*/*'), copyToCacheDirectory: true, multiple: false });
@@ -1617,6 +1757,31 @@ export default function App() {
 
   function updateSharedResourceSetting(id, field, value) {
     setFormSharedResourceSettings(old => ({ ...old, [id]: { ...(old[id] || {}), [field]: value } }));
+  }
+
+  function previewSharedAudio(resource, setting, lessonId = 'new-lesson-preview', scholar = '') {
+    if (!resource?.uri) {
+      Alert.alert('آډیو نشته', 'د ازمایښتي اورېدو لپاره د آډیو فایل ونه موندل شو.');
+      return;
+    }
+    const startSeconds = setting?.audioStartSeconds == null || setting.audioStartSeconds === '' ? 0 : Number(setting.audioStartSeconds);
+    const endSeconds = setting?.audioEndSeconds == null || setting.audioEndSeconds === '' ? null : Number(setting.audioEndSeconds);
+    if (!Number.isFinite(startSeconds) || startSeconds < 0 || (endSeconds != null && (!Number.isFinite(endSeconds) || endSeconds <= startSeconds))) {
+      Alert.alert('ناسم وخت', 'د آډیو د پیل او پای وختونه سم وټاکئ؛ پای باید له پیل وروسته وي.');
+      return;
+    }
+    startAudio({
+      id: `preview::${lessonId}::${resource.id}`,
+      progressKey: `preview::${lessonId}::${resource.id}`,
+      title: `ازمایښتي اورېدل – ${resource.title}`,
+      audio: resource.uri,
+      section: resource.section,
+      scholar,
+      audioStartSeconds: startSeconds,
+      audioEndSeconds: endSeconds,
+      stopAfterTrack: true,
+      previewOnly: true
+    }, startSeconds * 1000);
   }
 
   function parseOptionalSharedAudioStart(value) {
@@ -1720,6 +1885,22 @@ export default function App() {
       Alert.alert('ناسم PDF مخ', 'د تړلي PDF مخ باید مثبت عدد وي.'); return;
     }
 
+    const parsedSharedResourceSettings = {};
+    for (const resourceId of formSharedResourceIds) {
+      const setting = formSharedResourceSettings[resourceId] || {};
+      const audioStartSeconds = parseOptionalSharedAudioStart(setting.audioStartSeconds);
+      const audioEndSeconds = parseOptionalSharedAudioStart(setting.audioEndSeconds);
+      const pdfPageRaw = String(setting.pdfPage || '').trim();
+      const pdfPage = pdfPageRaw ? Number(pdfPageRaw) : null;
+      const pdfEndPageRaw = String(setting.pdfEndPage || '').trim();
+      const pdfEndPage = pdfEndPageRaw ? Number(pdfEndPageRaw) : null;
+      const resource = sharedResources.find(row => row.id === resourceId);
+      if (Number.isNaN(audioStartSeconds) || Number.isNaN(audioEndSeconds) || (audioStartSeconds != null && audioEndSeconds != null && audioEndSeconds <= audioStartSeconds)) { Alert.alert('ناسم آډیو وخت', `د «${resource?.title || 'فایل'}» د پیل او پای وختونه سم وټاکئ؛ پای باید له پیل وروسته وي.`); return; }
+      if (pdfPageRaw && (!Number.isInteger(pdfPage) || pdfPage < 1)) { Alert.alert('ناسم PDF مخ', `د «${resource?.title || 'فایل'}» د PDF مخ مثبته شمېره ولیکئ.`); return; }
+      if (pdfEndPageRaw && (!Number.isInteger(pdfEndPage) || pdfEndPage < 1 || (pdfPage != null && pdfEndPage < pdfPage))) { Alert.alert('ناسم PDF مخ', `د «${resource?.title || 'فایل'}» پای مخ باید د پیل له مخ سره برابر یا ترې وروسته وي.`); return; }
+      parsedSharedResourceSettings[resourceId] = { audioStartSeconds, audioEndSeconds, pdfPage, pdfEndPage };
+    }
+
     if (screen === 'arabicBookEditor') {
       const existingBook = editingGlobalItemId ? globalItems.find(item => item.id === editingGlobalItemId) : null;
       const book = {
@@ -1735,7 +1916,7 @@ export default function App() {
         audioTracks: formAudioTracks.length ? formAudioTracks : (formAudio ? [{ id: `audio-${Date.now()}`, name: 'آډیو', uri: formAudio }] : []),
         attachments: formAttachments,
         sharedResourceIds: [...new Set(formSharedResourceIds)],
-        sharedResourceSettings: formSharedResourceSettings,
+        sharedResourceSettings: parsedSharedResourceSettings,
         audioStartSeconds: parsedOptionalAudioStart,
         pdfPage: parsedOptionalPdfPage,
         section: selectedSection,
@@ -1763,21 +1944,7 @@ export default function App() {
       Alert.alert('عمومي مواد ونه موندل شول', 'د آډیو یا PDF سرچینه له ټاکلي فولډر څخه بیا وټاکئ.');
       return;
     }
-    const parsedSharedResourceSettings = {};
-    for (const resourceId of formSharedResourceIds) {
-      const setting = formSharedResourceSettings[resourceId] || {};
-      const audioStartSeconds = parseOptionalSharedAudioStart(setting.audioStartSeconds);
-      const audioEndSeconds = parseOptionalSharedAudioStart(setting.audioEndSeconds);
-      const pdfPageRaw = String(setting.pdfPage || '').trim();
-      const pdfPage = pdfPageRaw ? Number(pdfPageRaw) : null;
-      const pdfEndPageRaw = String(setting.pdfEndPage || '').trim();
-      const pdfEndPage = pdfEndPageRaw ? Number(pdfEndPageRaw) : null;
-      const resource = sharedResources.find(row => row.id === resourceId);
-      if (Number.isNaN(audioStartSeconds) || Number.isNaN(audioEndSeconds) || (audioStartSeconds != null && audioEndSeconds != null && audioEndSeconds <= audioStartSeconds)) { Alert.alert('ناسم آډیو وخت', `د «${resource?.title || 'فایل'}» د پیل او پای وختونه سم وټاکئ؛ پای باید له پیل وروسته وي.`); return; }
-      if (pdfPageRaw && (!Number.isInteger(pdfPage) || pdfPage < 1)) { Alert.alert('ناسم PDF مخ', `د «${resource?.title || 'فایل'}» د PDF مخ مثبته شمېره ولیکئ.`); return; }
-      if (pdfEndPageRaw && (!Number.isInteger(pdfEndPage) || pdfEndPage < 1 || (pdfPage != null && pdfEndPage < pdfPage))) { Alert.alert('ناسم PDF مخ', `د «${resource?.title || 'فایل'}» پای مخ باید د پیل له مخ سره برابر یا ترې وروسته وي.`); return; }
-      parsedSharedResourceSettings[resourceId] = { audioStartSeconds, audioEndSeconds, pdfPage, pdfEndPage };
-    }
+
 
     const newItem = {
       ...(existingItem || {}),
@@ -2003,18 +2170,24 @@ export default function App() {
           audioFinishHandledRef.current = true;
           player.pause();
           player.seekTo(boundedEndAt / 1000).catch(() => {});
-          persistAudioProgress(audioItemRef.current, boundedEndAt);
+          if (!audioItemRef.current?.previewOnly) persistAudioProgress(audioItemRef.current, boundedEndAt);
           setAudioStatus(old => ({ ...old, isPlaying: false, positionMillis: boundedEndAt }));
           return;
         }
         if (mapped.positionMillis - lastProgressSaveRef.current >= 5000) {
           lastProgressSaveRef.current = mapped.positionMillis;
-          persistAudioProgress(audioItemRef.current, mapped.positionMillis);
+          if (!audioItemRef.current?.previewOnly) persistAudioProgress(audioItemRef.current, mapped.positionMillis);
         }
         if (status.didJustFinish && !audioFinishHandledRef.current) {
           audioFinishHandledRef.current = true;
-          persistAudioProgress(audioItemRef.current, 0);
-          playNextAudio(false);
+          if (audioItemRef.current?.stopAfterTrack) {
+            const finalPosition = mapped.durationMillis || mapped.positionMillis;
+            if (!audioItemRef.current?.previewOnly) persistAudioProgress(audioItemRef.current, finalPosition);
+            setAudioStatus(old => ({ ...old, isPlaying: false, positionMillis: finalPosition }));
+            return;
+          }
+          if (!audioItemRef.current?.previewOnly) persistAudioProgress(audioItemRef.current, 0);
+          if (!audioItemRef.current?.previewOnly) playNextAudio(false);
         }
       });
       setAudioStatus({ isLoaded: false, isPlaying: false, positionMillis: startAt, durationMillis: 0, rate: 1 });
@@ -2150,7 +2323,7 @@ export default function App() {
       Alert.alert('PDF نشته', 'د دې درس لپاره PDF فایل نه دی ثبت شوی.');
       return;
     }
-    let targetPage = page || item.pdfPage || null;
+    let targetPage = page || item.pdfPageStart || item.pdfPage || null;
     if (!page) {
       try {
         const saved = await AsyncStorage.getItem(STORAGE.pdfProgress);
@@ -4786,12 +4959,19 @@ export default function App() {
               <Text style={styles.smallMuted}>ټاکل شوې درجه: {sharedResourceSection}{sharedResourceFolder ? ` ← ${sharedResourceFolder}` : ''}{sharedResourceSubfolder ? ` ← ${sharedResourceSubfolder}` : ''}</Text>
               <GoldButton title="＋ فایل کتابتون ته اضافه کړه" onPress={addSharedAcademicResource} />
             </View>
+            <View style={styles.formCard}>
+              <Text style={[styles.cardHeading, { color: settings.headingColor }]}>د کتابتون د څارنې وسایل</Text>
+              <GoldButton title="د تکراري فایلونو پېژندنه" secondary onPress={scanSharedResourceDuplicates} />
+              <GoldButton title="د ګډ کتابتون عمومي استعمال راپور" secondary onPress={showSharedLibraryUsageReport} />
+              <Text style={styles.smallMuted}>تکراري فایلونه یوازې پېژندل کېږي؛ حذفول یې ستا له اجازې پرته نه ترسره کېږي.</Text>
+            </View>
             <Text style={[styles.cardHeading, { color: settings.headingColor }]}>ثبت شوې سرچینې ({sharedResources.length})</Text>
             {sharedResources.map(resource => <View key={resource.id} style={styles.formCard}>
               <Text style={[styles.listCardTitle, { color: settings.textColor }]}>{resource.title}</Text><Text style={styles.smallMuted}>{resource.section}{resource.folder ? ` · ${resource.folder}` : ''}{resource.subfolder ? ` · ${resource.subfolder}` : ''} · {resource.kind === 'audio' ? 'آډیو' : resource.kind === 'pdf' ? 'PDF' : 'فایل'} · {formatFileSize(resource.size)}{resource.durationSeconds ? ` · ${formatDuration(resource.durationSeconds * 1000)}` : ''}</Text>
               <View style={{ flexDirection: 'row-reverse', flexWrap: 'wrap', gap: 7 }}>
                 <GoldButton title="✎ نوم بدلول" secondary onPress={() => { setEditingSharedResourceId(resource.id); setEditingSharedResourceTitle(resource.title); }} />
                 <GoldButton title="پرانیستل" secondary onPress={() => resource.kind === 'audio' ? startAudio({ id: resource.id, title: resource.title, audio: resource.uri, section: resource.section }, 0) : resource.kind === 'pdf' ? openPdf({ id: resource.id, title: resource.title, pdf: resource.uri }, 1) : shareFile(resource.uri, '*/*')} />
+                <GoldButton title="د کارونې راپور" secondary onPress={() => showSharedResourceUsage(resource)} />
                 <GoldButton title="فایل بدلول" secondary onPress={() => replaceSharedAcademicResource(resource)} />
                 <GoldButton title="حذف" secondary onPress={() => removeSharedAcademicResource(resource.id)} />
               </View>
@@ -5592,7 +5772,7 @@ export default function App() {
               <Text style={[styles.cardHeading, { color: settings.headingColor, marginTop: 10 }]}>د فرعي برخې د پیل نقطه (اختیاري)</Text>
               <SecondsPicker label="د آډیو د پیل وخت (اختیاري)" value={formAudioStartSeconds} onChange={setFormAudioStartSeconds} maximum={24 * 60 * 60} />
               <Field textColor={settings.textColor} label="د PDF د پیل مخ" value={formPdfPage} onChangeText={setFormPdfPage} placeholder="تش پرېښودل = له لومړي مخ څخه" keyboardType="numeric" />
-              <Text style={styles.smallMuted}>دا دواړه اختیارونه اختیاري دي؛ که یې تش پرېږدئ، آډیو او PDF له خپل عادي پیل څخه پرانیستل کېږي.</Text>
+              <Text style={styles.smallMuted}>دا دواړه اختیارونه اختیاري دي؛ که د آډیو پیل تش پرېږدئ، له صفره به شروع شي؛ که پای هم تش وي، تر طبیعي پای پورې به روان وي. د PDF پیل مخ او پای مخ هم اختیاري دي.</Text>
               <GoldButton title="＋ نور فایلونه یوځای وټاکئ (Word، PowerPoint، انځور، PDF، ویډیو...)" secondary onPress={pickLessonAttachments} />
               {formAttachments.length > 0 ? (
                 <View style={{ marginTop: 8 }}>
@@ -5609,7 +5789,7 @@ export default function App() {
 
             <View style={styles.formCard}>
               <Text style={[styles.cardHeading, { color: settings.headingColor }]}>له ګډ علمي کتابتون څخه سرچینې ونښلوئ</Text>
-              <Text style={styles.smallMuted}>لومړی علمي برخه، بیا فولډر او په پای کې اړوند فایل وټاکئ. فایل یوازې لینک کېږي؛ کاپي نه جوړېږي.</Text>
+              <Text style={styles.smallMuted}>لومړی علمي برخه، بیا فولډر او فرعي فولډر وټاکئ؛ تر ټاکلو مخکې د کتابتون ټول فایلونه نه ښکاري. اړوند فایل یوازې له همدې لارې لینک کېږي، کاپي نه جوړېږي او د هر درس لپاره یې خپله نقطه ساتل کېږي.</Text>
               <GoldButton title={showSharedBrowser ? 'د ګډ کتابتون انتخاب پټ کړه' : '📚 له ګډ کتابتون څخه انتخاب'} secondary onPress={() => { setShowSharedBrowser(v => !v); setSharedBrowserSection(''); setSharedBrowserFolder(''); setSharedBrowserSubfolder(''); }} />
               {showSharedBrowser && <View style={{ marginTop: 8 }}>
                 <Text style={{ color: COLORS.gold, textAlign: 'right', marginBottom: 6 }}>۱ ـ علمي برخه وټاکئ</Text>
@@ -5630,7 +5810,7 @@ export default function App() {
                   <View style={{ flex: 1, marginRight: 8 }}><Text style={{ color: COLORS.white, textAlign: 'right' }}>{resource.title}</Text><Text style={styles.smallMuted}>{resource.section}{resource.folder ? ` · ${resource.folder}` : ''}{resource.subfolder ? ` · ${resource.subfolder}` : ''} · {resource.kind === 'audio' ? 'آډیو' : resource.kind === 'pdf' ? 'PDF' : 'فایل'}</Text></View>
                 </TouchableOpacity>
                 {formSharedResourceIds.includes(resource.id) && <View style={{ marginTop: 7, paddingHorizontal: 8 }}>
-                  {resource.kind === 'audio' && <><SecondsPicker label="د آډیو پیل" value={formSharedResourceSettings[resource.id]?.audioStartSeconds ?? ''} onChange={value => updateSharedResourceSetting(resource.id, 'audioStartSeconds', value)} maximum={Math.max(0, Number(resource.durationSeconds || 86400))} /><SecondsPicker label="د آډیو پای (اختیاري)" value={formSharedResourceSettings[resource.id]?.audioEndSeconds ?? ''} onChange={value => updateSharedResourceSetting(resource.id, 'audioEndSeconds', value)} maximum={Math.max(0, Number(resource.durationSeconds || 86400))} /></>}
+                  {resource.kind === 'audio' && <><SecondsPicker label="د آډیو پیل" value={formSharedResourceSettings[resource.id]?.audioStartSeconds ?? ''} onChange={value => updateSharedResourceSetting(resource.id, 'audioStartSeconds', value)} maximum={Math.max(0, Number(resource.durationSeconds || 86400))} /><SecondsPicker label="د آډیو پای (اختیاري)" value={formSharedResourceSettings[resource.id]?.audioEndSeconds ?? ''} onChange={value => updateSharedResourceSetting(resource.id, 'audioEndSeconds', value)} maximum={Math.max(0, Number(resource.durationSeconds || 86400))} /><GoldButton title="▶ ټاکل شوې برخه ازمایښتي واوره" secondary onPress={() => previewSharedAudio(resource, formSharedResourceSettings[resource.id] || {}, editingGlobalItemId || 'new-lesson-preview', formScholar)} /></>}
                   {resource.kind === 'pdf' && <><Field textColor={settings.textColor} label="د PDF د پیل مخ" value={formSharedResourceSettings[resource.id]?.pdfPage != null ? String(formSharedResourceSettings[resource.id].pdfPage) : ''} onChangeText={value => updateSharedResourceSetting(resource.id, 'pdfPage', value)} placeholder="لکه 25" keyboardType="number-pad" /><Field textColor={settings.textColor} label="د PDF د پای مخ (اختیاري)" value={formSharedResourceSettings[resource.id]?.pdfEndPage != null ? String(formSharedResourceSettings[resource.id].pdfEndPage) : ''} onChangeText={value => updateSharedResourceSetting(resource.id, 'pdfEndPage', value)} placeholder="لکه 40" keyboardType="number-pad" /></>}
                 </View>}
               </View>)}
@@ -5709,7 +5889,7 @@ export default function App() {
               {(selectedItem.sharedResourceIds || []).map(id => {
                 const resource = sharedResources.find(row => row.id === id);
                 if (!resource) return <Text key={id} style={styles.smallMuted}>یوه تړلې سرچینه په کتابتون کې نه موندل کېږي.</Text>;
-                const setting = selectedItem.sharedResourceSettings?.[id] || {}; return <View key={id} style={{ marginBottom: 9 }}><Text style={{ color: COLORS.white, textAlign: 'right' }}>{resource.title} · {resource.section}{resource.folder ? ` · ${resource.folder}` : ''}{resource.subfolder ? ` · ${resource.subfolder}` : ''}</Text><GoldButton title={resource.kind === 'audio' ? `▶ دا آډیو واوره${setting.audioStartSeconds != null ? ` له ${setting.audioStartSeconds} ثانیو` : ''}` : resource.kind === 'pdf' ? `▤ دا PDF ولوله${setting.pdfPage ? ` – مخ ${setting.pdfPage}${setting.pdfEndPage ? ` تر ${setting.pdfEndPage}` : ''}` : ''}` : 'فایل شریک کړه'} secondary onPress={() => resource.kind === 'audio' ? startAudio({ id: `${selectedItem.id}::${resource.id}`, progressKey: `${selectedItem.id}::${resource.id}`, title: resource.title, audio: resource.uri, section: resource.section, scholar: selectedItem.scholar || '', audioStartSeconds: setting.audioStartSeconds, audioEndSeconds: setting.audioEndSeconds }, setting.audioStartSeconds != null ? Number(setting.audioStartSeconds) * 1000 : undefined) : resource.kind === 'pdf' ? openPdf({ id: `${selectedItem.id}::${resource.id}`, title: resource.title, pdf: resource.uri, pdfPageEnd: setting.pdfEndPage != null && setting.pdfEndPage !== '' ? Number(setting.pdfEndPage) : null }, setting.pdfPage || 1) : shareFile(resource.uri, '*/*')} /></View>;
+                const setting = selectedItem.sharedResourceSettings?.[id] || {}; return <View key={id} style={{ marginBottom: 9 }}><Text style={{ color: COLORS.white, textAlign: 'right' }}>{resource.title} · {resource.section}{resource.folder ? ` · ${resource.folder}` : ''}{resource.subfolder ? ` · ${resource.subfolder}` : ''}</Text><GoldButton title={resource.kind === 'audio' ? `▶ دا آډیو واوره${setting.audioStartSeconds != null ? ` له ${setting.audioStartSeconds} ثانیو` : ''}` : resource.kind === 'pdf' ? `▤ دا PDF ولوله${setting.pdfPage ? ` – مخ ${setting.pdfPage}${setting.pdfEndPage ? ` تر ${setting.pdfEndPage}` : ''}` : ''}` : 'فایل شریک کړه'} secondary onPress={() => resource.kind === 'audio' ? startAudio({ id: `${selectedItem.id}::${resource.id}`, progressKey: `${selectedItem.id}::${resource.id}`, title: resource.title, audio: resource.uri, section: resource.section, scholar: selectedItem.scholar || '', audioStartSeconds: setting.audioStartSeconds, audioEndSeconds: setting.audioEndSeconds, stopAfterTrack: true }, Number(setting.audioStartSeconds || 0) * 1000) : resource.kind === 'pdf' ? openPdf({ id: `${selectedItem.id}::${resource.id}`, title: resource.title, pdf: resource.uri, pdfPageStart: setting.pdfPage != null && setting.pdfPage !== '' ? Number(setting.pdfPage) : 1, pdfPageEnd: setting.pdfEndPage != null && setting.pdfEndPage !== '' ? Number(setting.pdfEndPage) : null }, setting.pdfPage || 1) : shareFile(resource.uri, '*/*')} /></View>;
               })}
             </View> : null}
 
@@ -5976,11 +6156,27 @@ export default function App() {
                   key={`${selectedItem.id}-${pdfInitialPage}`}
                   source={{ uri: selectedItem.pdf, cache: true }}
                   page={pdfInitialPage}
-                  onLoadComplete={(numberOfPages) => setPdfTotalPages(numberOfPages)}
+                  onLoadComplete={(numberOfPages) => {
+                    setPdfTotalPages(numberOfPages);
+                    const minPage = Math.min(numberOfPages, Math.max(1, Number(selectedItem?.pdfPageStart || 1)));
+                    const maxPage = selectedItem?.pdfPageEnd ? Math.min(numberOfPages, Number(selectedItem.pdfPageEnd)) : numberOfPages;
+                    if (pdfInitialPage < minPage || pdfInitialPage > maxPage) {
+                      const safePage = Math.max(minPage, Math.min(maxPage, pdfInitialPage));
+                      setPdfInitialPage(safePage);
+                      setPdfCurrentPage(safePage);
+                    }
+                  }}
                   onPageChanged={(page) => {
-                    if (selectedItem?.pdfPageEnd && page > Number(selectedItem.pdfPageEnd)) {
-                      setPdfInitialPage(Number(selectedItem.pdfPageEnd));
-                      setPdfCurrentPage(Number(selectedItem.pdfPageEnd));
+                    const minPage = Math.min(pdfTotalPages || Number(selectedItem?.pdfPageStart || 1), Math.max(1, Number(selectedItem?.pdfPageStart || 1)));
+                    const maxPage = selectedItem?.pdfPageEnd ? Math.min(pdfTotalPages || Number(selectedItem.pdfPageEnd), Number(selectedItem.pdfPageEnd)) : (pdfTotalPages || Infinity);
+                    if (page < minPage) {
+                      setPdfInitialPage(minPage);
+                      setPdfCurrentPage(minPage);
+                      return;
+                    }
+                    if (page > maxPage) {
+                      setPdfInitialPage(maxPage);
+                      setPdfCurrentPage(maxPage);
                       return;
                     }
                     setPdfCurrentPage(page);

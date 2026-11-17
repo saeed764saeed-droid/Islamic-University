@@ -1,11 +1,19 @@
-# Sample Snack app
+# میراث اسلام – نسخه له دوو اسانتیاوو سره
 
-Open the `App.js` file to start writing some code. You can preview the changes directly on your phone or tablet by scanning the **QR code** or use the iOS or Android emulators. When you're done, click **Save** and share the link!
+دا پروژه د Expo SDK 54 پر بنسټ ده. د اصلي اپ د تنظیماتو او AsyncStorage کلیدونه ساتل شوي دي.
 
-When you're ready to see everything that Expo provides (or if you want to use your own editor) you can **Download** your project and use it with [expo cli](https://docs.expo.dev/get-started/installation/#expo-cli)).
+## نوي اسانتیاوې
 
-All projects created in Snack are publicly available, so you can easily share the link to this project via link, or embed it on a web page with the `<>` button.
+1. **د ټاکل شوې آډیو برخې ازمایښتي اورېدل:** د درس د ثبت/سمون پر مهال د ګډ کتابتون له آډیو سره د پیل او اختیاري پای وخت وټاکئ او د خوندي کولو تر مخه یې واورئ. ازمایښتي اورېدل د عادي درس د اورېدلو پرمختګ نه بدلوي او بل درس ته نه اوړي.
+2. **د ګډ فایل د کارونې راپور:** د ګډ کتابتون په هر فایل کې د «د کارونې راپور» تڼۍ د هغو درسونو نومونه، علما او علمي برخې ښيي چې فایل ورسره تړلی دی، او حدیثي تړاوونه هم شمېرل/ښودل کېږي.
 
-If you're having problems, you can tweet to us [@expo](https://twitter.com/expo) or ask in our [forums](https://forums.expo.dev/c/expo-dev-tools/61) or [Discord](https://chat.expo.dev/).
+## نصب او پورته کول
 
-Snack is Open Source. You can find the code on the [GitHub repo](https://github.com/expo/snack).
+- د `App.js` فایل د پروژې په اصلي فولډر کې دی.
+- د `assets` فولډر او دواړه د پلیر انځورونه وساتئ.
+- د پروژې نور فایلونه (`package.json`, `app.json`, `app.config.js`, `eas.json`, `index.js`, `.github`) هماغسې وساتئ.
+- د GitHub په موبایل کې د `App.js` پخوانی فایل د دې نسخې په فایل بدل کړئ. د `assets` فولډر دننه انځورونه هم وساتئ.
+
+## ازموینه
+
+د App.js د JSX/JavaScript نحوي جوړښت ازموینه شوې او صفر نحوي تېروتنې یې راپور کړې. د Android/EAS build او په واقعي موبایل کې د آډیو او PDF عملي ازموینه لا جلا ترسره کول غواړي.
