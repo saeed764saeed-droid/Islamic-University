@@ -20,6 +20,9 @@ import {
 } from 'react-native';
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { auth, db } from './firebaseClient';
+import { onAuthStateChanged, signInWithEmailAndPassword, signOut } from 'firebase/auth';
+import { doc, getDoc, setDoc } from 'firebase/firestore';
 import * as DocumentPicker from 'expo-document-picker';
 import * as Sharing from 'expo-sharing';
 import * as Notifications from 'expo-notifications';
@@ -463,6 +466,11 @@ export default function App() {
   const [saving, setSaving] = useState(false);
   const [backupBusy, setBackupBusy] = useState(false);
   const [backupStatus, setBackupStatus] = useState('');
+  const [firebaseEmail, setFirebaseEmail] = useState('');
+  const [firebasePassword, setFirebasePassword] = useState('');
+  const [firebaseUser, setFirebaseUser] = useState(null);
+  const [firebaseBusy, setFirebaseBusy] = useState(false);
+  const [firebaseStatus, setFirebaseStatus] = useState('');
 
   // ------------------------------------------------
   // 10.2 - د انتخاب شویو برخو معلومات
@@ -749,6 +757,137 @@ export default function App() {
     const subscription = Notifications.addNotificationResponseReceivedListener(openFromNotification);
     return () => subscription.remove();
   }, []);
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, user => {
+      setFirebaseUser(user || null);
+      if (!user) setFirebaseStatus('له Firebase سره ننوتل نه دي شوي.');
+      else setFirebaseStatus(`مدیر حساب وصل دی: ${user.email || user.uid}`);
+    });
+    return unsubscribe;
+  }, []);
+
+  async function firebaseAdminLogin() {
+    if (!firebaseEmail.trim() || !firebasePassword) {
+      Alert.alert('اړین معلومات', 'د مدیر ایمیل او پاسورډ ولیکئ.');
+      return;
+    }
+    try {
+      setFirebaseBusy(true);
+      await signInWithEmailAndPassword(auth, firebaseEmail.trim(), firebasePassword);
+      setFirebasePassword('');
+      Alert.alert('بریالی', 'د مدیر حساب له Firebase سره وصل شو.');
+    } catch (error) {
+      console.error('Firebase login error:', error);
+      Alert.alert('د ننوتلو ستونزه', 'ایمیل یا پاسورډ سم نه دی، یا د Firebase Authentication تنظیمات بشپړ نه دي.');
+    } finally {
+      setFirebaseBusy(false);
+    }
+  }
+
+  async function firebaseAdminLogout() {
+    try {
+      await signOut(auth);
+      setFirebaseStatus('له Firebase څخه وتل وشول.');
+    } catch (error) {
+      Alert.alert('ستونزه', 'له Firebase څخه وتل بریالي نه شول.');
+    }
+  }
+
+  // یوازې د ګډ علمي کتابتون معلومات همغږي کېږي؛ شخصي نوټونه، خوښې او د زده کړې پرمختګ نه پورته کېږي.
+  const FIREBASE_LIBRARY_KEYS = [
+    STORAGE.books, STORAGE.global, STORAGE.adhkar, STORAGE.sitta,
+    STORAGE.scholarNames, STORAGE.folderAdmin, STORAGE.sharedResources,
+    STORAGE.customSittaBooks, STORAGE.scholarTaxonomy
+  ];
+
+  async function uploadLibraryToFirebase() {
+    if (!auth.currentUser) {
+      Alert.alert('ننوتل اړین دي', 'لومړی د مدیر حساب له لارې Firebase ته ننوځئ.');
+      return;
+    }
+    Alert.alert(
+      'آنلاین کتابتون ته لېږل',
+      'د دې موبایل د ګډ کتابتون معلومات به Firebase ته پورته شي. شخصي نوټونه، خوښې او د زده کړې پرمختګ نه پورته کېږي. د آډیو او PDF اصلي فایلونه هم په دې پړاو کې نه پورته کېږي. دوام ورکړو؟',
+      [
+        { text: 'لغوه', style: 'cancel' },
+        { text: 'هو، پورته یې کړه', onPress: async () => {
+          try {
+            setFirebaseBusy(true);
+            setFirebaseStatus('د کتابتون معلومات چمتو کېږي...');
+            const manifest = { schemaVersion: 1, projectId: 'islamic-university-27d8f', updatedAt: new Date().toISOString(), updatedBy: auth.currentUser.uid, keys: FIREBASE_LIBRARY_KEYS, chunkCounts: {} };
+            for (const key of FIREBASE_LIBRARY_KEYS) {
+              const raw = await AsyncStorage.getItem(key);
+              const value = raw == null ? 'null' : raw;
+              const chunks = value.match(/[\s\S]{1,100000}/g) || [''];
+              manifest.chunkCounts[key] = chunks.length;
+              for (let index = 0; index < chunks.length; index++) {
+                const chunkId = `${encodeURIComponent(key)}_${index}`;
+                await setDoc(doc(db, 'library_sync_v1', 'payloads', 'chunks', chunkId), { key, index, data: chunks[index], updatedAt: manifest.updatedAt });
+              }
+            }
+            await setDoc(doc(db, 'library_sync_v1', 'manifest'), manifest);
+            setFirebaseStatus(`کتابتون آنلاین خوندي شو: ${new Date().toLocaleString()}`);
+            Alert.alert('بریالی', 'د کتابتون معلومات Firebase ته پورته شول. آډیو او PDF اصلي فایلونه په دې پړاو کې نه دي پورته شوي.');
+          } catch (error) {
+            console.error('Firebase upload error:', error);
+            Alert.alert('اپلوډ ناکام شو', 'له Firebase سره د معلوماتو د لېږلو ستونزه رامنځته شوه. انټرنېټ او امنیتي قواعد وګورئ.');
+          } finally {
+            setFirebaseBusy(false);
+          }
+        }}
+      ]
+    );
+  }
+
+  async function restoreLibraryFromFirebase() {
+    if (!auth.currentUser) {
+      Alert.alert('ننوتل اړین دي', 'لومړی د مدیر حساب له لارې Firebase ته ننوځئ.');
+      return;
+    }
+    Alert.alert(
+      'له آنلاین کتابتون څخه بیا راوستل',
+      'دا کار به د دې موبایل اوسني ګډ کتابتون معلومات د Firebase له نسخې سره بدل کړي. مخکې له دوام څخه د ZIP بیک‌اپ لرل اړین دي. شخصي نوټونه او خوښې به نه بدلېږي.',
+      [
+        { text: 'لغوه', style: 'cancel' },
+        { text: 'هو، بیا یې راوړه', style: 'destructive', onPress: async () => {
+          try {
+            setFirebaseBusy(true);
+            const manifestSnap = await getDoc(doc(db, 'library_sync_v1', 'manifest'));
+            if (!manifestSnap.exists()) throw new Error('No cloud library manifest');
+            const manifest = manifestSnap.data();
+            if (manifest.projectId !== 'islamic-university-27d8f') throw new Error('Cloud project mismatch');
+            const pairs = [];
+            for (const key of (manifest.keys || [])) {
+              if (!FIREBASE_LIBRARY_KEYS.includes(key)) continue;
+              const count = Number(manifest.chunkCounts?.[key] || 0);
+              if (!count || count > 10000) throw new Error('Invalid chunk count');
+              let raw = '';
+              for (let index = 0; index < count; index++) {
+                const chunkId = `${encodeURIComponent(key)}_${index}`;
+                const chunkSnap = await getDoc(doc(db, 'library_sync_v1', 'payloads', 'chunks', chunkId));
+                if (!chunkSnap.exists() || chunkSnap.data().key !== key || chunkSnap.data().index !== index) throw new Error(`Missing data chunk for ${key}`);
+                raw += chunkSnap.data().data || '';
+              }
+              if (raw !== 'null') JSON.parse(raw);
+              pairs.push([key, raw === 'null' ? null : raw]);
+            }
+            const validPairs = pairs.filter(([, value]) => value !== null);
+            if (!validPairs.length) throw new Error('No library data to restore');
+            await AsyncStorage.multiSet(validPairs);
+            await loadAllData();
+            setFirebaseStatus(`آنلاین کتابتون بېرته راوستل شو: ${manifest.updatedAt || ''}`);
+            Alert.alert('بشپړ شو', 'د آنلاین کتابتون معلومات دې موبایل ته راوستل شول. که د آډیو یا PDF فایلونه په دې موبایل کې نه وي، د هغوی فایلونه به لا جلا انتقال ته اړتیا ولري.');
+          } catch (error) {
+            console.error('Firebase restore error:', error);
+            Alert.alert('بیا راوستل ناکام شول', 'آنلاین معلومات بشپړ نه شول راوستل کېدای. د موبایل اوسني معلومات مو نه دي پاک شوي.');
+          } finally {
+            setFirebaseBusy(false);
+          }
+        }}
+      ]
+    );
+  }
 
   async function loadAllData() {
     try {
@@ -7363,6 +7502,23 @@ export default function App() {
               {backupBusy ? <View style={{ paddingVertical: 10, alignItems: 'center' }}><ActivityIndicator color={COLORS.gold} /><Text style={[styles.smallMuted, { marginTop: 7 }]}>{backupStatus || 'کار روان دی...'}</Text></View> : null}
               <GoldButton title={backupBusy ? 'مهرباني وکړئ انتظار...' : '⬆ بشپړ ZIP بیک‌اپ صادرول'} secondary onPress={exportManualBackup} />
               <GoldButton title={backupBusy ? 'مهرباني وکړئ انتظار...' : '⬇ بشپړ ZIP بیک‌اپ بېرته راوستل'} secondary onPress={importManualBackup} />
+            </View>}
+
+            {(!settingsSearch || ['firebase','آنلاین','فایربېس','کلاوډ','cloud'].some(word => settingsSearch.trim().toLowerCase().includes(word) || word.includes(settingsSearch.trim().toLowerCase()))) && <View style={styles.formCard}>
+              <Text style={[styles.cardHeading, { color: settings.headingColor }]}>د Firebase آنلاین کتابتون</Text>
+              <Text style={styles.smallMuted}>پروژه: islamic-university-27d8f</Text>
+              <Text style={[styles.smallMuted, { marginTop: 6 }]}>{firebaseStatus || 'د مدیر حساب له لارې ننوتل وکړئ.'}</Text>
+              {firebaseUser ? <>
+                <GoldButton title={firebaseBusy ? 'مهرباني وکړئ انتظار...' : '⬆ ګډ کتابتون آنلاین ته پورته کول'} secondary onPress={uploadLibraryToFirebase} />
+                <GoldButton title={firebaseBusy ? 'مهرباني وکړئ انتظار...' : '⬇ له آنلاین کتابتون څخه بیا راوستل'} secondary onPress={restoreLibraryFromFirebase} />
+                <GoldButton title="له Firebase څخه وتل" secondary onPress={firebaseAdminLogout} />
+              </> : <>
+                <TextInput value={firebaseEmail} onChangeText={setFirebaseEmail} placeholder="د مدیر ایمیل" placeholderTextColor={COLORS.muted} keyboardType="email-address" autoCapitalize="none" autoCorrect={false} style={[styles.designColorInput, { marginTop: 10 }]} textAlign="left" />
+                <TextInput value={firebasePassword} onChangeText={setFirebasePassword} placeholder="د مدیر پاسورډ" placeholderTextColor={COLORS.muted} secureTextEntry style={[styles.designColorInput, { marginTop: 8 }]} textAlign="left" />
+                <GoldButton title={firebaseBusy ? 'نښلول کېږي...' : 'د مدیر حساب سره Firebase ته ننوتل'} secondary onPress={firebaseAdminLogin} />
+              </>}
+              {firebaseBusy ? <View style={{ paddingVertical: 8, alignItems: 'center' }}><ActivityIndicator color={COLORS.gold} /><Text style={styles.smallMuted}>له آنلاین ډیټابېس سره اړیکه روانه ده...</Text></View> : null}
+              <Text style={[styles.smallMuted, { marginTop: 8 }]}>یادونه: دا پړاو یوازې د ګډ کتابتون معلومات همغږي کوي؛ شخصي معلومات او د آډیو/PDF اصلي فایلونه نه لېږدوي. د فایلونو آنلاین انتقال به د Firebase Storage تر تنظیم وروسته فعال شي.</Text>
             </View>}
 
             {(!settingsSearch || 'ژبه language'.includes(settingsSearch.trim().toLowerCase())) && <>
