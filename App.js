@@ -27,6 +27,7 @@ import * as Location from 'expo-location';
 import { createAudioPlayer, setAudioModeAsync } from 'expo-audio';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Crypto from 'expo-crypto';
+import { zip, unzip } from 'react-native-zip-archive';
 import Pdf from 'react-native-pdf';
 import { Ionicons } from '@expo/vector-icons';
 
@@ -460,6 +461,8 @@ export default function App() {
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [backupBusy, setBackupBusy] = useState(false);
+  const [backupStatus, setBackupStatus] = useState('');
 
   // ------------------------------------------------
   // 10.2 - د انتخاب شویو برخو معلومات
@@ -663,6 +666,7 @@ export default function App() {
   const [quranMode, setQuranMode] = useState(false);
 
   const [searchText, setSearchText] = useState('');
+  const [allLessonsSearch, setAllLessonsSearch] = useState('');
   const [searchEditingKey, setSearchEditingKey] = useState('');
   const [searchEditValue, setSearchEditValue] = useState('');
   const [noteSearch, setNoteSearch] = useState('');
@@ -1010,6 +1014,7 @@ export default function App() {
       itemDetails: selectedAcademicBook ? 'arabicBookDetails' : (selectedAcademicType ? (selectedAcademicAyah ? 'quranAcademicAyahDetails' : 'quranAcademicAyahs') : 'sectionFolder'),
       lessonEditor: selectedAcademicBook ? 'arabicBookDetails' : (selectedAcademicType ? (selectedAcademicAyah ? 'quranAcademicAyahDetails' : 'quranAcademicAyahs') : 'sectionFolder'),
       notes: 'home',
+      allLessons: 'home',
       noteEditor: 'notes',
       reminders: 'home',
       reminderEditor: 'reminders',
@@ -2542,69 +2547,241 @@ export default function App() {
     return `${(value / (1024 * 1024)).toFixed(2)} MB`;
   }
 
-  // بشپړ محلي Backup: ټول اپ معلومات او تنظیمات پکې شامل دي.
+  // ==================================================
+  // بشپړ Backup او Restore: معلومات + د آډیو/PDF/نور محلي فایلونه
+  // د ZIP آرشیف لپاره native react-native-zip-archive کارول کېږي.
+  // ==================================================
+
+  function walkAndCollectLocalUris(value, found = new Set()) {
+    if (typeof value === 'string') {
+      if (/^(file|content):\/\//i.test(value)) found.add(value);
+      return found;
+    }
+    if (Array.isArray(value)) {
+      value.forEach(item => walkAndCollectLocalUris(item, found));
+    } else if (value && typeof value === 'object') {
+      Object.values(value).forEach(item => walkAndCollectLocalUris(item, found));
+    }
+    return found;
+  }
+
+  function rewriteUrisDeep(value, uriMap) {
+    if (typeof value === 'string') return uriMap[value] || value;
+    if (Array.isArray(value)) return value.map(item => rewriteUrisDeep(item, uriMap));
+    if (value && typeof value === 'object') {
+      const next = {};
+      Object.entries(value).forEach(([key, item]) => { next[key] = rewriteUrisDeep(item, uriMap); });
+      return next;
+    }
+    return value;
+  }
+
+  function rewriteStoredRawValue(rawValue, uriMap) {
+    if (typeof rawValue !== 'string') return rawValue;
+    try {
+      const parsed = JSON.parse(rawValue);
+      return JSON.stringify(rewriteUrisDeep(parsed, uriMap));
+    } catch (error) {
+      return uriMap[rawValue] || rawValue;
+    }
+  }
+
+  function safeExtension(uri, fallback = '.bin') {
+    const clean = String(uri || '').split('?')[0].split('#')[0];
+    const match = clean.match(/\.([a-zA-Z0-9]{1,8})$/);
+    return match ? `.${match[1].toLowerCase()}` : fallback;
+  }
+
   async function exportManualBackup() {
+    if (backupBusy) return;
+    setBackupBusy(true);
+    setBackupStatus('د اپ معلومات راټولېږي...');
+    let workDir = '';
+    let archiveUri = '';
     try {
       const allKeys = Object.values(STORAGE);
       const entries = await AsyncStorage.multiGet(allKeys);
-      const data = {};
-      entries.forEach(([key, value]) => { data[key] = value; });
+      const storage = {};
+      entries.forEach(([key, value]) => { if (value !== null) storage[key] = value; });
+
+      // د هر ذخیره شوي JSON دننه ټول محلي فایل URI ګانې پیدا کړه.
+      const localUris = new Set();
+      Object.values(storage).forEach(raw => {
+        if (typeof raw !== 'string') return;
+        try { walkAndCollectLocalUris(JSON.parse(raw), localUris); }
+        catch (error) { walkAndCollectLocalUris(raw, localUris); }
+      });
+
+      workDir = `${FileSystem.cacheDirectory}mirath-backup-work-${Date.now()}/`;
+      const mediaDir = `${workDir}media/`;
+      await FileSystem.makeDirectoryAsync(mediaDir, { intermediates: true });
+
+      const mediaMap = {};
+      let index = 0;
+      for (const originalUri of localUris) {
+        index += 1;
+        setBackupStatus(`د فایلونو کاپي: ${index} / ${localUris.size}`);
+        const relativePath = `media/file-${String(index).padStart(5, '0')}${safeExtension(originalUri)}`;
+        const destination = `${workDir}${relativePath}`;
+        try {
+          await FileSystem.copyAsync({ from: originalUri, to: destination });
+          const copiedInfo = await FileSystem.getInfoAsync(destination);
+          if (!copiedInfo.exists || copiedInfo.isDirectory) throw new Error('فایل کاپي نه شو');
+          mediaMap[originalUri] = relativePath;
+        } catch (copyError) {
+          throw new Error(`د یوه ثبت شوي فایل کاپي ناکامه شوه: ${originalUri}`);
+        }
+      }
+
       const payload = {
         app: 'ميراث اسلام',
-        schemaVersion: 2,
+        format: 'mirath-islam-complete-backup',
+        schemaVersion: 3,
         exportedAt: new Date().toISOString(),
-        storage: data,
-        note: 'دا Backup د اپ ډیټا او فایل URI ګانې ساتي؛ د آډیو/PDF اصلي فایلونه جلا کاپي ته اړتیا لري.'
+        storage,
+        media: mediaMap,
+        mediaFilesCount: Object.keys(mediaMap).length,
+        note: 'دا آرشیف د اپ ثبت شوي معلومات او موندل شوي محلي فایلونه لري.'
       };
-      const uri = `${FileSystem.cacheDirectory}mirath-islam-full-backup-${Date.now()}.json`;
-      await FileSystem.writeAsStringAsync(uri, JSON.stringify(payload, null, 2));
-      await shareFile(uri, 'application/json');
+      await FileSystem.writeAsStringAsync(`${workDir}backup.json`, JSON.stringify(payload));
+
+      setBackupStatus('د ZIP بیک‌اپ جوړېږي...');
+      archiveUri = `${FileSystem.cacheDirectory}mirath-islam-complete-backup-${Date.now()}.zip`;
+      await zip(workDir.replace(/\/$/, ''), archiveUri);
+      const archiveInfo = await FileSystem.getInfoAsync(archiveUri);
+      if (!archiveInfo.exists || !archiveInfo.size) throw new Error('ZIP آرشیف جوړ نه شو');
+
+      setBackupStatus('د بیک‌اپ فایل د شریکولو لپاره چمتو دی...');
+      const available = await Sharing.isAvailableAsync();
+      if (!available) throw new Error('د فایل شریکولو خدمت فعال نه دی');
+      await Sharing.shareAsync(archiveUri, {
+        mimeType: 'application/zip',
+        dialogTitle: 'د میراث اسلام بشپړ بیک‌اپ خوندي کړئ'
+      });
+      Alert.alert('بیک‌اپ چمتو شو', `بشپړ ZIP بیک‌اپ جوړ شو. ${Object.keys(mediaMap).length} محلي فایل ورسره شامل شول. د شریکولو په کړکۍ کې یې په موبایل یا کلاوډ کې خوندي کړئ.`);
     } catch (error) {
-      Alert.alert('Backup ستونزه', 'بشپړ Backup جوړ نه شو. د موبایل حافظه وګورئ.');
+      console.error('Full backup export error:', error);
+      Alert.alert('د بیک‌اپ ستونزه', error?.message || 'بشپړ بیک‌اپ جوړ نه شو. حافظه او د فایلونو لاسرسی وګورئ.');
+    } finally {
+      if (workDir) { try { await FileSystem.deleteAsync(workDir, { idempotent: true }); } catch (error) {} }
+      setBackupBusy(false);
+      setBackupStatus('');
     }
   }
 
   async function importManualBackup() {
+    if (backupBusy) return;
+    setBackupBusy(true);
+    setBackupStatus('د بیک‌اپ فایل لوستل کېږي...');
+    let extractDir = '';
+    const restoreMediaUris = [];
     try {
       const result = await DocumentPicker.getDocumentAsync({
-        type: ['application/json', 'text/*'], copyToCacheDirectory: true, multiple: false
+        type: ['application/zip', 'application/x-zip-compressed', 'application/json'],
+        copyToCacheDirectory: true,
+        multiple: false
       });
-      if (result.canceled || !result.assets?.length) return;
-      const raw = await FileSystem.readAsStringAsync(result.assets[0].uri);
-      const backup = JSON.parse(raw);
-      if (!backup || backup.app !== 'ميراث اسلام') throw new Error('ناسم Backup');
+      if (result.canceled || !result.assets?.length) { setBackupBusy(false); setBackupStatus(''); return; }
 
-      // د زړې نسخې Backup هم منل کېږي.
-      const restoreData = backup.storage && typeof backup.storage === 'object'
-        ? backup.storage
-        : {
-            [STORAGE.audioMarks]: JSON.stringify(backup.audioMarks || []),
-            [STORAGE.pdfMarks]: JSON.stringify(backup.pdfMarks || []),
-            [STORAGE.notes]: JSON.stringify(backup.notes || [])
-          };
-      const validEntries = Object.entries(restoreData).filter(([key, value]) =>
+      const selectedBackup = result.assets[0];
+      const selectedName = String(selectedBackup.name || '').toLowerCase();
+      if (selectedName.endsWith('.json') || selectedBackup.mimeType === 'application/json') {
+        const legacyBackup = JSON.parse(await FileSystem.readAsStringAsync(selectedBackup.uri));
+        if (!legacyBackup || legacyBackup.app !== 'ميراث اسلام') throw new Error('دا د میراث اسلام معتبر JSON بیک‌اپ نه دی');
+        const legacyStorage = legacyBackup.storage && typeof legacyBackup.storage === 'object' ? legacyBackup.storage : {
+          [STORAGE.audioMarks]: JSON.stringify(legacyBackup.audioMarks || []),
+          [STORAGE.pdfMarks]: JSON.stringify(legacyBackup.pdfMarks || []),
+          [STORAGE.notes]: JSON.stringify(legacyBackup.notes || [])
+        };
+        const legacyEntries = Object.entries(legacyStorage).filter(([key, value]) => Object.values(STORAGE).includes(key) && typeof value === 'string');
+        if (!legacyEntries.length) throw new Error('په JSON بیک‌اپ کې د اپ معلومات نشته');
+        Alert.alert('زوړ JSON بیک‌اپ', 'دا پخوانی بیک‌اپ یوازې د اپ معلومات او د فایلونو پتې لري؛ اصلي آډیو او PDF فایلونه پکې نشته. غواړئ معلومات یې بېرته راوګرځوئ؟', [
+          { text: 'لغوه', style: 'cancel', onPress: () => { setBackupBusy(false); setBackupStatus(''); } },
+          { text: 'بېرته راوستل', style: 'destructive', onPress: async () => {
+            try { await AsyncStorage.multiSet(legacyEntries); await loadAllData(); Alert.alert('بریالی شو', 'د JSON بیک‌اپ معلومات بېرته راوګرځېدل. د آډیو او PDF اصلي فایلونه په دې پخواني بیک‌اپ کې نه وو.'); }
+            catch (e) { Alert.alert('Restore ستونزه', 'د JSON بیک‌اپ معلومات بېرته خوندي نه شول.'); }
+            finally { setBackupBusy(false); setBackupStatus(''); }
+          } }
+        ]);
+        return;
+      }
+
+      extractDir = `${FileSystem.cacheDirectory}mirath-restore-${Date.now()}/`;
+      await FileSystem.makeDirectoryAsync(extractDir, { intermediates: true });
+      await unzip(result.assets[0].uri, extractDir);
+      const manifestUri = `${extractDir}backup.json`;
+      const manifestInfo = await FileSystem.getInfoAsync(manifestUri);
+      if (!manifestInfo.exists) throw new Error('په ZIP کې backup.json ونه موندل شو');
+      const backup = JSON.parse(await FileSystem.readAsStringAsync(manifestUri));
+      if (!backup || backup.app !== 'ميراث اسلام' || backup.format !== 'mirath-islam-complete-backup' || !backup.storage || typeof backup.storage !== 'object') {
+        throw new Error('دا د میراث اسلام بشپړ ZIP بیک‌اپ نه دی');
+      }
+
+      const validEntries = Object.entries(backup.storage).filter(([key, value]) =>
         Object.values(STORAGE).includes(key) && typeof value === 'string'
       );
-      if (!validEntries.length) throw new Error('تش Backup');
+      if (!validEntries.length) throw new Error('په بیک‌اپ کې د اپ معلومات نشته');
 
+      // ټول میډیا فایلونه لومړی د اپ په دایمي فولډر کې راوباسه.
+      // تر دې پړاو مخکې AsyncStorage نه بدلېږي.
+      const uriMap = {};
+      const mediaEntries = Object.entries(backup.media || {});
+      let mediaIndex = 0;
+      for (const [oldUri, relativePath] of mediaEntries) {
+        mediaIndex += 1;
+        setBackupStatus(`د فایلونو بېرته راوستل: ${mediaIndex} / ${mediaEntries.length}`);
+        if (typeof oldUri !== 'string' || !/^(file|content):\/\//i.test(oldUri) || typeof relativePath !== 'string' || !/^media\/file-[0-9]{5}\.[a-zA-Z0-9]{1,8}$/.test(relativePath)) {
+          throw new Error('د بیک‌اپ د فایلونو لاره ناسمه ده');
+        }
+        const source = `${extractDir}${relativePath}`;
+        const sourceInfo = await FileSystem.getInfoAsync(source);
+        if (!sourceInfo.exists || sourceInfo.isDirectory) throw new Error(`د بیک‌اپ یو فایل ورک دی: ${relativePath}`);
+        const newUri = `${FileSystem.documentDirectory}restored-${Date.now()}-${mediaIndex}${safeExtension(relativePath)}`;
+        await FileSystem.copyAsync({ from: source, to: newUri });
+        const newInfo = await FileSystem.getInfoAsync(newUri);
+        if (!newInfo.exists) throw new Error('د رسنیو فایل بېرته خوندي نه شو');
+        uriMap[oldUri] = newUri;
+        restoreMediaUris.push(newUri);
+      }
+
+      const restoredEntries = validEntries.map(([key, raw]) => [key, rewriteStoredRawValue(raw, uriMap)]);
+      const missingStorageKeys = backup.schemaVersion >= 3
+        ? Object.values(STORAGE).filter(key => !Object.prototype.hasOwnProperty.call(backup.storage, key))
+        : [];
       Alert.alert(
-        'Backup بېرته راوستل',
-        'د Backup معلومات به د همدې اپ اوسني معلومات بدل کړي. مخکې له دوام څخه اوسنی Backup صادر کړئ. دوام ورکوئ؟',
+        'بشپړ بیک‌اپ بېرته راوستل',
+        `په دې بیک‌اپ کې ${restoredEntries.length} د معلوماتو برخې او ${mediaEntries.length} فایلونه شته. د اوسني اپ معلومات به د بیک‌اپ په معلوماتو بدل شي. مخکې له دوام څخه اوسنی بیک‌اپ خوندي کړئ. دوام ورکوئ؟`,
         [
-          { text: 'لغوه', style: 'cancel' },
+          { text: 'لغوه', style: 'cancel', onPress: async () => {
+            // د لغوه کولو پر مهال نوي کاپي شوي فایلونه هم پاک کړه.
+            for (const uri of Object.values(uriMap)) { try { await FileSystem.deleteAsync(uri, { idempotent: true }); } catch (error) {} }
+            if (extractDir) { try { await FileSystem.deleteAsync(extractDir, { idempotent: true }); } catch (error) {} }
+            setBackupBusy(false); setBackupStatus('');
+          } },
           { text: 'هو، بېرته یې راوړه', style: 'destructive', onPress: async () => {
             try {
-              await AsyncStorage.multiSet(validEntries);
+              if (missingStorageKeys.length) await AsyncStorage.multiRemove(missingStorageKeys);
+              await AsyncStorage.multiSet(restoredEntries);
               await loadAllData();
-              Alert.alert('بریالی شو', 'د Backup معلومات بېرته راوګرځېدل. که آډیو یا PDF فایلونه په بل موبایل کې وي، باید فایلونه هم انتقال کړئ.');
+              Alert.alert('بریالی شو', `معلومات او ${mediaEntries.length} فایلونه بېرته راوګرځېدل.`);
             } catch (restoreError) {
-              Alert.alert('Restore ستونزه', 'معلومات بېرته خوندي نه شول.');
+              console.error('Backup restore error:', restoreError);
+              Alert.alert('Restore ستونزه', 'معلومات په بشپړ ډول بېرته خوندي نه شول. پخوانی Backup وساتئ او اپ مه حذفوئ.');
+            } finally {
+              if (extractDir) { try { await FileSystem.deleteAsync(extractDir, { idempotent: true }); } catch (error) {} }
+              setBackupBusy(false);
+              setBackupStatus('');
             }
-          }}
+          } }
         ]
       );
     } catch (error) {
-      Alert.alert('Backup ستونزه', 'دا فایل د میراث اسلام معتبر Backup نه دی یا لوستل نه شو.');
+      console.error('Full backup import error:', error);
+      Alert.alert('د بیک‌اپ ستونزه', error?.message || 'دا ZIP فایل د میراث اسلام معتبر بیک‌اپ نه دی یا لوستل نه شو.');
+      for (const uri of restoreMediaUris) { try { await FileSystem.deleteAsync(uri, { idempotent: true }); } catch (cleanupError) {} }
+      if (extractDir) { try { await FileSystem.deleteAsync(extractDir, { idempotent: true }); } catch (cleanupError) {} }
+      setBackupBusy(false);
+      setBackupStatus('');
     }
   }
 
@@ -3485,6 +3662,73 @@ export default function App() {
 
   function getOldBooks() {
     return books[getBookKey()] || [];
+  }
+
+  // د ټولو دودیزو کتابونو درسونه په یوه مرکزي فهرست کې راټولوي.
+  // شمېرې د کتاب له اوسني ترتیب څخه محاسبه کېږي؛ د درس ثابت ID نه بدلېږي.
+  function getAllBookLessons() {
+    const rows = [];
+    Object.entries(books || {}).forEach(([bookGroup, bookList]) => {
+      (bookList || []).forEach(book => {
+        let bookSequence = 0;
+        (book.chapters || []).forEach((chapter, chapterIndex) => {
+          (chapter.lessons || []).forEach((lesson, chapterLessonIndex) => {
+            bookSequence += 1;
+            rows.push({
+              id: lesson.id,
+              title: lesson.title || lesson.name || 'بې نومه درس',
+              lesson,
+              chapter,
+              book,
+              bookGroup,
+              chapterSequence: chapterLessonIndex + 1,
+              bookSequence,
+              chapterTitle: chapter.title || '',
+              bookTitle: book.title || '',
+              scholar: lesson.scholar || chapter.scholar || book.scholar || '',
+              section: lesson.section || chapter.section || book.section || ''
+            });
+          });
+        });
+      });
+    });
+    // د مرکزي علمي کتابتون (global_library) ټول درسونه او تعلیمي مواد هم ورزیاتېږي.
+    const globalBookCounters = {};
+    const globalFolderCounters = {};
+    (globalItems || []).forEach(item => {
+      if (!item || item.resourceType === 'arabicAcademicBook') return;
+      const groupKey = item.bookId ? `book:${item.bookId}` : `folder:${item.section || ''}|${item.folderParent || ''}|${item.folder || ''}`;
+      globalBookCounters[groupKey] = (globalBookCounters[groupKey] || 0) + 1;
+      const folderKey = `${groupKey}|${item.folderParent || ''}|${item.folder || ''}`;
+      globalFolderCounters[folderKey] = (globalFolderCounters[folderKey] || 0) + 1;
+      rows.push({
+        id: item.id,
+        title: item.title || item.displayTitle || 'بې نومه درس',
+        item,
+        source: 'global',
+        bookTitle: item.bookTitle || item.bookName || item.folder || item.section || 'عمومي مواد',
+        chapterTitle: item.folderParent ? `${item.folderParent} / ${item.folder || ''}` : (item.folder || item.section || ''),
+        scholar: item.scholar || '',
+        section: item.section || '',
+        chapterSequence: globalFolderCounters[folderKey],
+        bookSequence: globalBookCounters[groupKey]
+      });
+    });
+    return rows;
+  }
+
+  function openCatalogLesson(row) {
+    if (!row) return;
+    if (row.source === 'global') {
+      setSelectedItem(row.item);
+      setScreen('itemDetails');
+      return;
+    }
+    setSelectedScholar(row.scholar || '');
+    setSelectedSection(row.section || '');
+    setSelectedBook(row.book);
+    setSelectedItem(row.book);
+    setScreen('oldBook');
   }
 
   function openScholar(name) {
@@ -4975,6 +5219,13 @@ export default function App() {
                   >
                     <Ionicons name="settings-outline" size={18} color={COLORS.gold} />
                   </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.headerActionButton}
+                    onPress={() => { setAllLessonsSearch(''); setScreen('allLessons'); }}
+                    accessibilityLabel="ټول درسونه"
+                  >
+                    <Ionicons name="library-outline" size={18} color={COLORS.gold} />
+                  </TouchableOpacity>
                   <View style={styles.headerTopSpacer} />
                   <TouchableOpacity
                     style={styles.headerActionButton}
@@ -5474,6 +5725,9 @@ export default function App() {
                   >
                     <Text style={styles.lessonTitle}>
                       {lessonIndex + 1}. {lesson.title}
+                    </Text>
+                    <Text style={styles.smallMuted}>
+                      د باب شمېره: {lessonIndex + 1} · د کتاب شمېره: {(selectedItem?.chapters || []).slice(0, index).reduce((total, priorChapter) => total + (priorChapter.lessons || []).length, 0) + lessonIndex + 1}
                     </Text>
                     <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 7 }}>
                       {Array.isArray(lesson.audioTracks) && lesson.audioTracks.length ? lesson.audioTracks.map((track, trackIndex) => <GoldButton key={track.id || trackIndex} title={`▶ ${track.name || `کلیپ ${trackIndex + 1}`}`} secondary onPress={() => startAudio({ id: `book-audio-${lesson.id}::${track.id || trackIndex}`, title: `${lesson.title} – ${track.name || `کلیپ ${trackIndex + 1}`}`, audio: track.uri, scholar: lesson.scholar || selectedScholar, section: lesson.section || selectedSection }, Math.max(0, Number(lesson.audioStartSeconds || 0)) * 1000)} />) : (lesson.audio || selectedItem?.audio) ? <GoldButton title="▶ آډیو واوره" secondary onPress={() => openBookAudio(lesson, chapter)} /> : null}
@@ -6307,8 +6561,8 @@ export default function App() {
                 <Text style={styles.bookmarkToolTitle}>{t("▤ د کتاب نښې (")}{pdfMarks.length})</Text>
               </TouchableOpacity>
             </View>
-            <GoldButton title="⬆ Backup صادرول" secondary onPress={exportManualBackup} />
-            <GoldButton title="⬇ Backup بېرته راوستل" secondary onPress={importManualBackup} />
+            <GoldButton title={backupBusy ? "مهرباني وکړئ انتظار..." : "⬆ بشپړ ZIP بیک‌اپ صادرول"} secondary onPress={exportManualBackup} />
+            <GoldButton title={backupBusy ? "مهرباني وکړئ انتظار..." : "⬇ بشپړ ZIP بیک‌اپ بېرته راوستل"} secondary onPress={importManualBackup} />
 
             <GoldButton
               title="＋ نوی نوټ"
@@ -7103,6 +7357,14 @@ export default function App() {
             />
             <TextInput value={settingsSearch} onChangeText={setSettingsSearch} placeholder="تنظیمات ولټوئ: ژبه، رنګ، خبرتیاوې..." placeholderTextColor={COLORS.muted} style={styles.designColorInput} textAlign="right" />
 
+            {(!settingsSearch || ['backup','بیک','بیک‌اپ','restore','رغونه'].some(word => settingsSearch.trim().toLowerCase().includes(word) || word.includes(settingsSearch.trim().toLowerCase()))) && <View style={styles.formCard}>
+              <Text style={[styles.cardHeading, { color: settings.headingColor }]}>بیک‌اپ او بیا رغونه</Text>
+              <Text style={styles.smallMuted}>دا ZIP بیک‌اپ د اپ معلومات او هغه محلي آډیو، PDF او نور فایلونه هم رانغاړي چې د اپ په معلوماتو کې ثبت شوي وي. د بیک‌اپ فایل په موبایل یا کلاوډ کې خوندي کړئ.</Text>
+              {backupBusy ? <View style={{ paddingVertical: 10, alignItems: 'center' }}><ActivityIndicator color={COLORS.gold} /><Text style={[styles.smallMuted, { marginTop: 7 }]}>{backupStatus || 'کار روان دی...'}</Text></View> : null}
+              <GoldButton title={backupBusy ? 'مهرباني وکړئ انتظار...' : '⬆ بشپړ ZIP بیک‌اپ صادرول'} secondary onPress={exportManualBackup} />
+              <GoldButton title={backupBusy ? 'مهرباني وکړئ انتظار...' : '⬇ بشپړ ZIP بیک‌اپ بېرته راوستل'} secondary onPress={importManualBackup} />
+            </View>}
+
             {(!settingsSearch || 'ژبه language'.includes(settingsSearch.trim().toLowerCase())) && <>
             <Text style={[styles.cardHeading, { color: settings.headingColor }]}>
               {t("د اپلیکیشن ژبه")}</Text>
@@ -7598,6 +7860,41 @@ export default function App() {
               );
             })}
             <GoldButton title="＋ د زده کړې نوی درس اضافه کړئ" onPress={() => { clearForm(); setSelectedScholar(''); setQuranMode(false); setSelectedSection('اسلامي زده کړې او درسي نصاب'); setSelectedFolder('تمهیدي او ابتدایي'); setSelectedFolderParent(''); setFormLevel('تمهیدي او ابتدایي'); setScreen('lessonEditor'); }} />
+          </ScrollView>
+        )}
+
+        {/* ==================================================
+            د ټولو کتابي درسونو مرکزي فهرست
+        ================================================== */}
+
+        {screen === 'allLessons' && (
+          <ScrollView contentContainerStyle={styles.pageContent} keyboardShouldPersistTaps="always" keyboardDismissMode="none">
+            <PageHeader
+              title="ټول درسونه"
+              subtitle="د کتابونو او بابونو ټول درسونه په یوه ځای کې"
+              onBack={goBack}
+            />
+            <Field
+              textColor={settings.textColor}
+              label="د درس، کتاب، باب یا استاد نوم ولټوئ"
+              value={allLessonsSearch}
+              onChangeText={setAllLessonsSearch}
+              placeholder="د درس نوم ولیکئ..."
+            />
+            <Text style={styles.smallMuted}>د باب شمېره په هر باب کې له ۱ څخه پیلېږي؛ د کتاب شمېره د ټولو بابونو په اوږدو کې مسلسل ده.</Text>
+            {getAllBookLessons()
+              .filter(row => !allLessonsSearch.trim() || `${row.title} ${row.bookTitle} ${row.chapterTitle} ${row.scholar} ${row.section}`.toLocaleLowerCase().includes(allLessonsSearch.trim().toLocaleLowerCase()))
+              .map(row => (
+                <TouchableOpacity key={`${row.bookGroup}-${row.id}`} style={styles.lessonCard} onPress={() => openCatalogLesson(row)}>
+                  <Text style={styles.lessonTitle}>{row.title}</Text>
+                  <Text style={styles.smallMuted}>{row.scholar} · {row.section}</Text>
+                  <Text style={styles.smallMuted}>{row.bookTitle} ← {row.chapterTitle}</Text>
+                  <Text style={styles.smallMuted}>د باب شمېره: {row.chapterSequence} · د کتاب شمېره: {row.bookSequence}</Text>
+                  <Text style={styles.smallMuted}>{(row.lesson?.audio || row.lesson?.audioTracks?.length || row.item?.audio || row.item?.audioTracks?.length) ? 'آډیو لري' : 'آډیو نشته'} · {(row.lesson?.pdf || row.item?.pdf) ? 'PDF لري' : 'PDF نشته'}</Text>
+                </TouchableOpacity>
+              ))}
+            {getAllBookLessons().length === 0 && <Text style={styles.emptyText}>تر اوسه په کتابونو کې درسونه نه دي ثبت شوي.</Text>}
+            {getAllBookLessons().length > 0 && allLessonsSearch.trim() && getAllBookLessons().filter(row => `${row.title} ${row.bookTitle} ${row.chapterTitle} ${row.scholar} ${row.section}`.toLocaleLowerCase().includes(allLessonsSearch.trim().toLocaleLowerCase())).length === 0 && <Text style={styles.emptyText}>د لټون پایله ونه موندل شوه.</Text>}
           </ScrollView>
         )}
 

@@ -48,7 +48,8 @@ module.exports = ({ config }) => {
     withGradleDownloadMirror(config),
     [
       "@config-plugins/react-native-blob-util",
-      "@config-plugins/react-native-pdf"
+      "@config-plugins/react-native-pdf",
+      "react-native-zip-archive"
     ]
   );
 };
