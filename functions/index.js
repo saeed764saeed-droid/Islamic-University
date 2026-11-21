@@ -11,6 +11,20 @@ const auth = getAuth();
 const bucket = getStorage().bucket();
 
 const VALID_ROLES = ['superadmin', 'admin', 'sectionAdmin', 'uploader', 'user'];
+
+const DEFAULT_ROLE_PERMISSIONS = {
+  superadmin: ['upload','createContent','editContent','deleteContent','publish','manageUsers','manageLibrary','editSettings','viewAudit','review'],
+  admin: ['upload','createContent','editContent','deleteContent','publish','manageLibrary','editSettings','viewAudit','review'],
+  sectionAdmin: ['upload','createContent','editContent','review'],
+  uploader: ['upload','createContent'], user: []
+};
+function actorHasPermission(actor, permission) {
+  if (actor.data.role === 'superadmin') return true;
+  const custom = actor.data.permissions;
+  if (custom && Object.prototype.hasOwnProperty.call(custom, permission)) return custom[permission] === true;
+  return (DEFAULT_ROLE_PERMISSIONS[actor.data.role] || []).includes(permission);
+}
+
 const VALID_SECTIONS = [
   'قرآن کریم او علوم القرآن', 'حدیث او علوم الحدیث', 'فقه او فروع', 'عقیده او توحید',
   'اصول الفقه او قواعد', 'سیرت او شمائل نبوي ﷺ', 'اسلامي تاریخ او تمدن',
@@ -22,7 +36,7 @@ const VALID_SECTIONS = [
 async function getActor(request) {
   if (!request.auth) throw new HttpsError('unauthenticated', 'ننوتل اړین دي.');
   const snap = await db.doc(`userRoles/${request.auth.uid}`).get();
-  if (!snap.exists || snap.data().active !== true) throw new HttpsError('permission-denied', 'دا حساب فعال اداري واک نه لري.');
+  if (!snap.exists || (snap.data().active !== true && !(snap.data().role === 'superadmin' && snap.data().active !== false))) throw new HttpsError('permission-denied', 'دا حساب فعال اداري واک نه لري.');
   return { uid: request.auth.uid, data: snap.data() };
 }
 
@@ -33,32 +47,100 @@ async function writeAudit(actorUid, action, target, details = {}) {
   });
 }
 
+
+exports.listUserRoles = onCall(async (request) => {
+  const actor = await getActor(request);
+  if (actor.data.role !== 'superadmin') {
+    throw new HttpsError('permission-denied', 'د ټولو حسابونو بشپړ لېست یوازې ستر اډمین لیدلی شي.');
+  }
+  const snapshot = await db.collection('userRoles').orderBy('email').limit(500).get();
+  return {
+    users: snapshot.docs.map(row => {
+      const data = row.data();
+      return {
+        uid: row.id,
+        email: data.email || '',
+        role: data.role || 'user',
+        active: data.active === true || (data.role === 'superadmin' && data.active !== false),
+        sectionKeys: Array.isArray(data.sectionKeys) ? data.sectionKeys : [],
+        folderKeys: Array.isArray(data.folderKeys) ? data.folderKeys : [],
+        permissions: data.permissions && typeof data.permissions === 'object' ? data.permissions : {},
+        updatedAt: data.updatedAt?.toDate ? data.updatedAt.toDate().toISOString() : null
+      };
+    })
+  };
+});
+
+exports.setUserRoleStatus = onCall(async (request) => {
+  const actor = await getActor(request);
+  if (actor.data.role !== 'superadmin') {
+    throw new HttpsError('permission-denied', 'د حسابونو فعالولو او بندولو اجازه یوازې ستر اډمین لري.');
+  }
+  const uid = String(request.data?.uid || '').trim();
+  const active = request.data?.active;
+  if (!uid || typeof active !== 'boolean') {
+    throw new HttpsError('invalid-argument', 'د حساب UID او فعال/غیرفعال حالت اړین دی.');
+  }
+  const targetRef = db.doc(`userRoles/${uid}`);
+  const targetSnap = await targetRef.get();
+  if (!targetSnap.exists) throw new HttpsError('not-found', 'دا اداري حساب ونه موندل شو.');
+  const target = targetSnap.data();
+  if (actor.data.role !== 'superadmin' && ['superadmin','admin'].includes(target.role)) throw new HttpsError('permission-denied', 'یوازې ستر اډمین د ستر/عمومي اډمین حساب بدلولی شي.');
+  if (target.role === 'superadmin' && active === false) {
+    const all = await db.collection('userRoles').where('role', '==', 'superadmin').get();
+    const activeCount = all.docs.filter(row => row.data().active === true || row.data().active == null).length;
+    if (activeCount <= 1) {
+      throw new HttpsError('failed-precondition', 'وروستی فعال ستر اډمین نه شي بندېدای؛ لومړی بل ستر اډمین فعال کړئ.');
+    }
+  }
+  await targetRef.update({
+    active,
+    updatedAt: FieldValue.serverTimestamp(),
+    updatedBy: actor.uid
+  });
+  await writeAudit(actor.uid, active ? 'account_activated' : 'account_deactivated', uid, {
+    email: target.email || '', role: target.role || ''
+  });
+  return { success: true, uid, active };
+});
+
 exports.setUserRoleByEmail = onCall(async (request) => {
   const actor = await getActor(request);
   const actorRole = actor.data.role;
-  if (!['superadmin', 'admin'].includes(actorRole)) throw new HttpsError('permission-denied', 'یوازې ستر اډمین یا عمومي اډمین رول ټاکلی شي.');
+  if (actorRole !== 'superadmin') throw new HttpsError('permission-denied', 'د رول ټاکلو اجازه یوازې ستر اډمین لري.');
 
   const email = String(request.data?.email || '').trim().toLowerCase();
   const role = String(request.data?.role || '');
+  const active = request.data?.active === undefined ? true : request.data.active;
+  if (typeof active !== 'boolean') throw new HttpsError('invalid-argument', 'د حساب فعال حالت ناسم دی.');
   const folderKeys = Array.isArray(request.data?.folderKeys)
     ? [...new Set(request.data.folderKeys.map(value => String(value).trim()).filter(Boolean))]
     : [];
   const sectionKeys = Array.isArray(request.data?.sectionKeys)
     ? [...new Set(request.data.sectionKeys.map(value => String(value).trim()).filter(Boolean))]
     : [];
+  const PERMISSION_KEYS = ['upload','createContent','editContent','deleteContent','publish','manageUsers','manageLibrary','editSettings','viewAudit','review'];
+  const permissions = {};
+  if (request.data?.permissions && typeof request.data.permissions === 'object') {
+    for (const [key, value] of Object.entries(request.data.permissions)) {
+      if (!PERMISSION_KEYS.includes(key) || typeof value !== 'boolean') throw new HttpsError('invalid-argument', 'د اجازې نوم یا ارزښت ناسم دی.');
+      permissions[key] = value;
+    }
+  }
 
   if (!email || !VALID_ROLES.includes(role)) throw new HttpsError('invalid-argument', 'ایمیل او له ټاکل شوو رولونو څخه یو انتخاب کړئ.');
-  if (actorRole === 'admin' && ['superadmin', 'admin'].includes(role)) throw new HttpsError('permission-denied', 'عمومي اډمین د ستر یا بل عمومي اډمین رول نه شي ټاکلی.');
+  if (role === 'superadmin' && actorRole !== 'superadmin') throw new HttpsError('permission-denied', 'یوازې ستر اډمین نوی ستر اډمین ټاکلی شي.');
+  if (actorRole !== 'superadmin' && role === 'admin') throw new HttpsError('permission-denied', 'یوازې ستر اډمین عمومي اډمین ټاکلی شي.');
   if (folderKeys.length > 200 || folderKeys.some(value => value.length > 300 || !value.includes('::'))) {
     throw new HttpsError('invalid-argument', 'د اپلوډر فولډر باید د برخه::فولډر په بڼه وي.');
   }
   if (sectionKeys.length > 10 || sectionKeys.some(value => !VALID_SECTIONS.includes(value))) {
     throw new HttpsError('invalid-argument', 'د برخې اډمین لپاره تر لسو پورې معتبرې علمي برخې ټاکل کېدای شي.');
   }
-  if (role === 'sectionAdmin' && sectionKeys.length === 0) throw new HttpsError('invalid-argument', 'د برخې اډمین لپاره لږ تر لږه یوه علمي برخه وټاکئ.');
-  if (role === 'uploader' && folderKeys.length === 0) throw new HttpsError('invalid-argument', 'اپلوډر ته لږ تر لږه یو فولډر وټاکئ.');
-  if (role !== 'uploader' && folderKeys.length) throw new HttpsError('invalid-argument', 'د فولډر اجازه یوازې اپلوډر ته ټاکل کېږي.');
-  if (role !== 'sectionAdmin' && sectionKeys.length) throw new HttpsError('invalid-argument', 'د علمي برخو اجازه یوازې د برخې اډمین ته ټاکل کېږي.');
+  const defaultUploadRoles = ['superadmin','admin','sectionAdmin','uploader'];
+  const uploadEnabled = permissions.upload === true || (permissions.upload === undefined && defaultUploadRoles.includes(role));
+  if (uploadEnabled && !['superadmin','admin'].includes(role) && folderKeys.length === 0 && sectionKeys.length === 0) throw new HttpsError('invalid-argument', 'د اپلوډ واک لرونکي حساب ته لږ تر لږه یوه علمي برخه یا فولډر وټاکئ.');
+  if (['superadmin','admin'].includes(role) && (folderKeys.length || sectionKeys.length)) throw new HttpsError('invalid-argument', 'ستر او عمومي اډمین ته د ټولو برخو واک وي؛ ځانګړي فولډرونه مه ټاکئ.');
 
   let target;
   try { target = await auth.getUserByEmail(email); }
@@ -67,12 +149,12 @@ exports.setUserRoleByEmail = onCall(async (request) => {
   const targetRoleSnap = await targetRoleRef.get();
   const previous = targetRoleSnap.exists ? targetRoleSnap.data() : null;
 
-  if (actorRole === 'admin' && previous && ['superadmin', 'admin'].includes(previous.role)) {
+  if (actorRole !== 'superadmin' && previous && ['superadmin', 'admin'].includes(previous.role)) {
     throw new HttpsError('permission-denied', 'عمومي اډمین د ستر یا بل عمومي اډمین حساب نه شي بدلولی.');
   }
-  if (previous?.role === 'superadmin' && previous.active === true && role !== 'superadmin') {
+  if (previous?.role === 'superadmin' && previous.active !== false && (role !== 'superadmin' || active === false)) {
     const activeSuperadmins = await db.collection('userRoles').where('role', '==', 'superadmin').get();
-    if (activeSuperadmins.docs.filter(row => row.data().active === true).length <= 1) {
+    if (activeSuperadmins.docs.filter(row => row.data().active === true || row.data().active == null).length <= 1) {
       throw new HttpsError('failed-precondition', 'وروستی ستر اډمین نه شي لرې کېدای؛ لومړی بل ستر اډمین وټاکئ.');
     }
   }
@@ -81,13 +163,14 @@ exports.setUserRoleByEmail = onCall(async (request) => {
     uid: target.uid,
     email: target.email || email,
     role,
-    active: true,
-    folderKeys: role === 'uploader' ? folderKeys : [],
-    sectionKeys: role === 'sectionAdmin' ? sectionKeys : [],
+    active,
+    folderKeys: ['superadmin','admin'].includes(role) ? [] : folderKeys,
+    sectionKeys: ['superadmin','admin'].includes(role) ? [] : sectionKeys,
+    permissions: role === 'superadmin' ? {} : permissions,
     updatedAt: FieldValue.serverTimestamp(),
     updatedBy: actor.uid
   }, { merge: true });
-  await writeAudit(actor.uid, 'role_assigned', target.uid, { email, oldRole: previous?.role || null, newRole: role, folderKeys, sectionKeys });
+  await writeAudit(actor.uid, 'role_assigned', target.uid, { email, oldRole: previous?.role || null, newRole: role, active, folderKeys, sectionKeys, permissions });
   return { success: true, uid: target.uid, role };
 });
 
@@ -107,7 +190,7 @@ exports.reviewPendingLesson = onCall(async (request) => {
   const currentStatus = pending.status;
 
   if (decision === 'forward') {
-    if (actorRole !== 'sectionAdmin') throw new HttpsError('permission-denied', 'یوازې د برخې اډمین درس عمومي اډمین ته لېږلی شي.');
+    if (!actorHasPermission(actor, 'review')) throw new HttpsError('permission-denied', 'د درسونو د کتنې اجازه نشته.');
     const assigned = Array.isArray(actor.data.sectionKeys) ? actor.data.sectionKeys : [];
     if (!assigned.includes(pending.section)) throw new HttpsError('permission-denied', 'دا علمي برخه ستاسې په واک کې نه ده.');
     if (currentStatus !== 'pending') throw new HttpsError('failed-precondition', 'یوازې د لومړنۍ کتنې درس لېږل کېدای شي.');
@@ -116,7 +199,7 @@ exports.reviewPendingLesson = onCall(async (request) => {
     return { success: true, status: 'admin_review' };
   }
 
-  if (!['superadmin', 'admin'].includes(actorRole)) throw new HttpsError('permission-denied', 'وروستی خپرول یوازې عمومي اډمین یا ستر اډمین کولی شي.');
+  if (!actorHasPermission(actor, 'publish')) throw new HttpsError('permission-denied', 'د وروستي تایید او خپرولو اجازه نشته.');
   if (!['pending', 'admin_review'].includes(currentStatus)) throw new HttpsError('failed-precondition', 'دا درس د وروستۍ پرېکړې لپاره په مناسب حالت کې نه دی.');
 
   if (actorRole === 'admin' && currentStatus === 'pending') {
