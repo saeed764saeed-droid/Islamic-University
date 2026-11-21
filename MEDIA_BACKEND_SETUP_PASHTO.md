@@ -46,7 +46,9 @@ firebase deploy --only functions
 
 ```bash
 cd functions
-GOOGLE_APPLICATION_CREDENTIALS="/secure/path/service-account.json" node scripts/bootstrap-superadmin.js FIREBASE_AUTH_UID
+cd functions
+npm install
+GOOGLE_APPLICATION_CREDENTIALS="/secure/path/service-account.json" node scripts/bootstrap_superadmins.js FIREBASE_AUTH_UID
 ```
 
 دا bootstrap یوازې یو ځل کار کوي. له دې وروسته هر لوی مدیر د اپلیکیشن د تنظیماتو له لارې نور مدیران او اپلوډران ټاکلی شي. د Service Account فایل د پروژې له فولډر څخه بهر وساتئ.

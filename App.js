@@ -512,10 +512,12 @@ export default function App() {
   const [firebaseRoleData, setFirebaseRoleData] = useState(null);
   const [pendingLessons, setPendingLessons] = useState([]);
   const [auditLogs, setAuditLogs] = useState([]);
+  const [managedUsers, setManagedUsers] = useState([]);
   const [newRoleEmail, setNewRoleEmail] = useState('');
   const [newRoleType, setNewRoleType] = useState('uploader');
   const [newRoleFolders, setNewRoleFolders] = useState('');
   const [newRoleSections, setNewRoleSections] = useState('');
+  const [newRolePermissions, setNewRolePermissions] = useState({});
   const [firebaseBusy, setFirebaseBusy] = useState(false);
   const [firebaseStatus, setFirebaseStatus] = useState('');
 
@@ -828,8 +830,10 @@ export default function App() {
           setFirebaseStatus('حساب وصل دی، خو د اپلېکېشن مدیر/اپلوډر اجازه ورته نه ده ټاکل شوې.');
           return;
         }
-        setFirebaseRole(roleData.role || 'user');
-        setFirebaseRoleData(roleData);
+        // د پخواني Super Admin سندونه چې active پکې نه وي، د فعال حساب په توګه عیارېږي.
+        const normalizedRoleData = roleData.role === 'superadmin' && roleData.active == null ? { ...roleData, active: true } : roleData;
+        setFirebaseRole(normalizedRoleData.role || 'user');
+        setFirebaseRoleData(normalizedRoleData);
         const roleLabels = { superadmin: 'ستر اډمین', admin: 'عمومي اډمین', sectionAdmin: 'د برخې اډمین', uploader: 'اپلوډر', user: 'عادي کارن' };
         setFirebaseStatus(`حساب وصل دی — ${roleLabels[roleData.role] || 'عادي کارن'}`);
       }, error => {
@@ -840,19 +844,31 @@ export default function App() {
     return () => { unsubscribe(); if (roleUnsubscribe) roleUnsubscribe(); };
   }, []);
 
+  const DEFAULT_ROLE_PERMISSIONS = {
+    superadmin: ['upload','createContent','editContent','deleteContent','publish','manageUsers','manageLibrary','editSettings','viewAudit','review'],
+    admin: ['upload','createContent','editContent','deleteContent','publish','manageLibrary','editSettings','viewAudit','review'],
+    sectionAdmin: ['upload','createContent','editContent','review'],
+    uploader: ['upload','createContent'], user: []
+  };
+  function hasPermission(permission) {
+    if (firebaseRole === 'superadmin') return true;
+    const assigned = firebaseRoleData?.permissions;
+    if (assigned && Object.prototype.hasOwnProperty.call(assigned, permission)) return assigned[permission] === true;
+    return (DEFAULT_ROLE_PERMISSIONS[firebaseRole] || []).includes(permission);
+  }
   const isGlobalAdmin = ['superadmin', 'admin'].includes(firebaseRole);
-  const isReviewer = ['superadmin', 'admin', 'sectionAdmin'].includes(firebaseRole);
+  const isReviewer = hasPermission('review');
 
   useEffect(() => {
     if (firebaseUser && isReviewer) loadPendingLessons();
-  }, [firebaseUser, firebaseRole]);
+  }, [firebaseUser, firebaseRole, firebaseRoleData]);
 
   async function loadPendingLessons() {
     if (!auth.currentUser || !isReviewer) return;
     try {
       const base = collection(db, 'pendingLessons');
       let queries = [];
-      if (firebaseRole === 'sectionAdmin') {
+      if (!['superadmin','admin'].includes(firebaseRole)) {
         const sections = Array.isArray(firebaseRoleData?.sectionKeys) ? firebaseRoleData.sectionKeys.slice(0, 10) : [];
         if (!sections.length) { setPendingLessons([]); return; }
         queries = [query(base, where('section', 'in', sections))];
@@ -865,7 +881,7 @@ export default function App() {
       const snapshots = await Promise.all(queries.map(q => getDocs(q)));
       const rows = snapshots.flatMap(snapshot => snapshot.docs.map(row => ({ id: row.id, ...row.data() })))
         .filter(row => ['pending', 'admin_review'].includes(row.status)
-          && (firebaseRole !== 'sectionAdmin' || row.status === 'pending'));
+          && (['superadmin','admin'].includes(firebaseRole) || row.status === 'pending'));
       setPendingLessons(rows);
     } catch (error) {
       console.error('Pending lesson load error:', error);
@@ -873,8 +889,45 @@ export default function App() {
     }
   }
 
+
+  async function loadManagedUsers() {
+    if (!auth.currentUser || firebaseRole !== 'superadmin') return;
+    try {
+      setFirebaseBusy(true);
+      const fn = httpsCallable(getFunctions(auth.app), 'listUserRoles');
+      const result = await fn({});
+      setManagedUsers(Array.isArray(result.data?.users) ? result.data.users : []);
+    } catch (error) {
+      console.error('Managed users load error:', error);
+      Alert.alert('د حسابونو ستونزه', error?.message || 'د کارنانو لېست ونه لوستل شو.');
+    } finally { setFirebaseBusy(false); }
+  }
+
+  async function changeManagedUserStatus(user, active) {
+    if (firebaseRole !== 'superadmin') return;
+    try {
+      setFirebaseBusy(true);
+      const fn = httpsCallable(getFunctions(auth.app), 'setUserRoleStatus');
+      await fn({ uid: user.uid, active });
+      await loadManagedUsers();
+      Alert.alert('بشپړ شو', active ? 'حساب فعال شو.' : 'حساب بند شو.');
+    } catch (error) {
+      console.error('Account status update error:', error);
+      Alert.alert('بدلون ونه شو', error?.message || 'د حساب حالت بدل نه شو.');
+    } finally { setFirebaseBusy(false); }
+  }
+
+  function editManagedUser(user) {
+    setNewRoleEmail(user.email || '');
+    setNewRoleType(user.role || 'user');
+    setNewRoleFolders(Array.isArray(user.folderKeys) ? user.folderKeys.join('\n') : '');
+    setNewRoleSections(Array.isArray(user.sectionKeys) ? user.sectionKeys.join('\n') : '');
+    setNewRolePermissions(user.permissions || {});
+    Alert.alert('د حساب معلومات', 'د حساب ایمیل او اوسني واکونه د رول د سمون په برخه کې واچول شول. د بدلون لپاره د رول اجازه ثبت کړئ.');
+  }
+
   async function loadAuditLogs() {
-    if (!auth.currentUser || !['superadmin', 'admin'].includes(firebaseRole)) return;
+    if (!auth.currentUser || !hasPermission('viewAudit')) return;
     try {
       const snapshot = await getDocs(query(collection(db, 'auditLogs'), orderBy('createdAt', 'desc'), limit(30)));
       setAuditLogs(snapshot.docs.map(row => ({ id: row.id, ...row.data() })));
@@ -885,17 +938,17 @@ export default function App() {
   }
 
   async function assignFirebaseRole() {
-    if (!['superadmin', 'admin'].includes(firebaseRole)) { Alert.alert('اجازه نشته', 'یوازې ستر اډمین یا عمومي اډمین د ټاکلو اجازه لري.'); return; }
+    if (firebaseRole !== 'superadmin') { Alert.alert('اجازه نشته', 'د کارنانو او رولونو اداره یوازې ستر اډمین کولی شي.'); return; }
     if (firebaseRole === 'admin' && ['superadmin', 'admin'].includes(newRoleType)) { Alert.alert('اجازه نشته', 'عمومي اډمین بل عمومي اډمین یا ستر اډمین نه شي ټاکلی.'); return; }
     const email = String(newRoleEmail || '').trim().toLowerCase();
     if (!email) { Alert.alert('ایمیل اړین دی', 'د هغه کس ایمیل ولیکئ چې رول ورکوئ.'); return; }
-    const folderKeys = String(newRoleFolders || '').split(/[\n,،]+/).map(value => value.trim()).filter(Boolean);
-    const sectionKeys = String(newRoleSections || '').split(/[\n,،]+/).map(value => value.trim()).filter(Boolean);
+    const folderKeys = ['superadmin','admin'].includes(newRoleType) ? [] : String(newRoleFolders || '').split(/[\n,،]+/).map(value => value.trim()).filter(Boolean);
+    const sectionKeys = ['superadmin','admin'].includes(newRoleType) ? [] : String(newRoleSections || '').split(/[\n,،]+/).map(value => value.trim()).filter(Boolean);
     try {
       setFirebaseBusy(true);
       const fn = httpsCallable(getFunctions(auth.app), 'setUserRoleByEmail');
-      await fn({ email, role: newRoleType, folderKeys, sectionKeys });
-      setNewRoleEmail(''); setNewRoleFolders(''); setNewRoleSections('');
+      await fn({ email, role: newRoleType, folderKeys, sectionKeys, permissions: newRolePermissions });
+      setNewRoleEmail(''); setNewRoleFolders(''); setNewRoleSections(''); setNewRolePermissions({});
       Alert.alert('بریالی شو', 'د کارن رول او ټاکل شوې اجازې ثبت شوې.');
     } catch (error) {
       console.error('Role assignment error:', error);
@@ -905,8 +958,8 @@ export default function App() {
 
   async function reviewPendingLesson(lessonId, decision) {
     if (!isReviewer) return;
-    if (firebaseRole === 'sectionAdmin' && decision !== 'forward') return;
-    if (firebaseRole === 'admin' && decision === 'forward') return;
+    if (decision === 'forward' && hasPermission('publish')) return;
+    if (['approve','reject'].includes(decision) && !hasPermission('publish')) return;
     try {
       setFirebaseBusy(true);
       const fn = httpsCallable(getFunctions(auth.app), 'reviewPendingLesson');
@@ -921,19 +974,16 @@ export default function App() {
   }
 
   function uploaderCanUseFolder(section, folder) {
-    if (['superadmin', 'admin'].includes(firebaseRole)) return true;
-    if (firebaseRole === 'sectionAdmin') {
-      const keys = Array.isArray(firebaseRoleData?.sectionKeys) ? firebaseRoleData.sectionKeys : [];
-      return keys.includes(section);
-    }
-    if (firebaseRole !== 'uploader') return false;
-    const keys = Array.isArray(firebaseRoleData?.folderKeys) ? firebaseRoleData.folderKeys : [];
-    return keys.includes(`${section}::${folder}`);
+    if (firebaseRole === 'superadmin' || (firebaseRole === 'admin' && hasPermission('upload'))) return true;
+    if (!hasPermission('upload')) return false;
+    const sectionKeys = Array.isArray(firebaseRoleData?.sectionKeys) ? firebaseRoleData.sectionKeys : [];
+    const folderKeys = Array.isArray(firebaseRoleData?.folderKeys) ? firebaseRoleData.folderKeys : [];
+    return sectionKeys.includes(section) || folderKeys.includes(`${section}::${folder}`);
   }
 
   async function uploadLocalMediaFile(file, mediaType, itemId, section, folder) {
     if (!file?.uri || file.mediaId || file.storagePath || /^https?:\/\//i.test(file.uri)) return file;
-    if (!auth.currentUser || !['superadmin', 'admin', 'sectionAdmin', 'uploader'].includes(firebaseRole)) {
+    if (!auth.currentUser || !hasPermission('upload')) {
       throw new Error('د آنلاین فایل پورته کولو لپاره مجاز اداري حساب ته ننوزئ.');
     }
     if (!uploaderCanUseFolder(section, folder)) throw new Error('ستاسو حساب دې فولډر ته د اپلوډ اجازه نه لري.');
@@ -973,11 +1023,20 @@ export default function App() {
     }
   }
 
+  function canEditContentInFolder(section, folder) {
+    if (!hasPermission('editContent')) return false;
+    if (['superadmin','admin'].includes(firebaseRole)) return true;
+    const sectionKeys = Array.isArray(firebaseRoleData?.sectionKeys) ? firebaseRoleData.sectionKeys : [];
+    const folderKeys = Array.isArray(firebaseRoleData?.folderKeys) ? firebaseRoleData.folderKeys : [];
+    if (!sectionKeys.length && !folderKeys.length) return true;
+    return sectionKeys.includes(section) || folderKeys.includes(`${section}::${folder}`);
+  }
+
   async function uploadLessonMedia(item) {
     const itemId = String(item.id);
     const section = item.section || selectedSection;
     const folder = item.folder || selectedFolder;
-    if (!uploaderCanUseFolder(section, folder)) throw new Error('ستاسو حساب دې برخې/فولډر ته د درس د سپارلو اجازه نه لري.');
+    if (!uploaderCanUseFolder(section, folder) && !canEditContentInFolder(section, folder)) throw new Error('ستاسو حساب دې برخې/فولډر ته د درس د سپارلو یا اصلاح اجازه نه لري.');
     setFirebaseBusy(true);
     const audioTracks = [];
     const attachments = [];
@@ -1122,8 +1181,8 @@ export default function App() {
   ];
 
   async function uploadLibraryToFirebase() {
-    if (!auth.currentUser || !['superadmin', 'admin'].includes(firebaseRole)) {
-      Alert.alert('اجازه نشته', 'یوازې ستر اډمین یا عمومي اډمین کولی شي د کتابتون عمومي معلومات Firebase ته پورته کړي.');
+    if (!auth.currentUser || !hasPermission('manageLibrary')) {
+      Alert.alert('اجازه نشته', 'ستاسو حساب د عمومي کتابتون د مدیریت اجازه نه لري.');
       return;
     }
     Alert.alert(
@@ -1165,8 +1224,8 @@ export default function App() {
   }
 
   async function restoreLibraryFromFirebase() {
-    if (!auth.currentUser || !['superadmin', 'admin'].includes(firebaseRole)) {
-      Alert.alert('اجازه نشته', 'یوازې ستر اډمین یا عمومي اډمین کولی شي د عمومي کتابتون معلومات بېرته راولي.');
+    if (!auth.currentUser || !hasPermission('manageLibrary')) {
+      Alert.alert('اجازه نشته', 'ستاسو حساب د عمومي کتابتون د بیا راوستلو اجازه نه لري.');
       return;
     }
     Alert.alert(
@@ -1320,7 +1379,7 @@ export default function App() {
 
     setSettings(updated);
     await saveData(STORAGE.settings, updated);
-    if (firebaseUser && ['superadmin', 'admin'].includes(firebaseRole) && ['headingColor', 'textColor', 'fontFamily'].some(key => Object.prototype.hasOwnProperty.call(newSettings, key))) {
+    if (firebaseUser && hasPermission('editSettings') && ['headingColor', 'textColor', 'fontFamily'].some(key => Object.prototype.hasOwnProperty.call(newSettings, key))) {
       try {
         await setDoc(doc(db, 'appConfig', 'public'), {
           visualSettings: {
@@ -1368,8 +1427,8 @@ export default function App() {
   }
 
   async function updateHomeDesign(patch, folderKey = null) {
-    if (firebaseUser && !['superadmin', 'admin'].includes(firebaseRole)) {
-      Alert.alert('اجازه نشته', 'د کورپاڼې عمومي ډیزاین او رنګونه یوازې ستر اډمین یا عمومي اډمین بدلولی شي.');
+    if (firebaseUser && !hasPermission('editSettings')) {
+      Alert.alert('اجازه نشته', 'ستاسو حساب د عمومي ډیزاین د بدلولو اجازه نه لري.');
       return;
     }
     const current = { ...DEFAULT_HOME_DESIGN, ...(settings.homeDesign || {}) };
@@ -1386,7 +1445,7 @@ export default function App() {
       next = { ...current, ...patch };
     }
     await updateSettings({ homeDesign: next });
-    if (firebaseUser && ['superadmin', 'admin'].includes(firebaseRole)) {
+    if (firebaseUser && hasPermission('editSettings')) {
       try {
         await setDoc(doc(db, 'appConfig', 'public'), {
           homeDesign: next,
@@ -2483,16 +2542,16 @@ export default function App() {
   }
 
   async function addGlobalItem() {
-    if (firebaseUser && !['superadmin', 'admin', 'sectionAdmin', 'uploader'].includes(firebaseRole)) {
-      Alert.alert('اجازه نشته', 'دا حساب د علمي درسونو د ثبت اجازه نه لري.');
+    if (firebaseUser && !hasPermission(editingGlobalItemId ? 'editContent' : 'createContent')) {
+      Alert.alert('اجازه نشته', 'دا حساب د علمي درسونو د ثبت یا اصلاح اجازه نه لري.');
       return;
     }
     if (firebaseUser && firebaseRole === 'sectionAdmin' && !uploaderCanUseFolder(selectedSection, selectedFolder)) {
       Alert.alert('اجازه نشته', 'تاسو یوازې خپلې ټاکل شوې علمي برخې کې درس ثبتولای شئ.');
       return;
     }
-    if (firebaseUser && firebaseRole === 'uploader' && editingGlobalItemId) {
-      Alert.alert('اجازه نشته', 'اپلوډر یوازې نوی درس سپارلی شي؛ د موجود درس اصلاح یوازې اډمین کولی شي.');
+    if (firebaseUser && editingGlobalItemId && !hasPermission('editContent')) {
+      Alert.alert('اجازه نشته', 'ستاسو حساب د موجود درس د اصلاح اجازه نه لري.');
       return;
     }
     const savedAsQuran = quranMode;
@@ -2595,7 +2654,7 @@ export default function App() {
         createdAt: existingBook?.createdAt || new Date().toISOString()
       };
       let bookToSave = book;
-      if (auth.currentUser && ['superadmin', 'admin', 'sectionAdmin', 'uploader'].includes(firebaseRole)) {
+      if (auth.currentUser && hasPermission('createContent')) {
         try { bookToSave = await uploadLessonMedia(book); }
         catch (error) { Alert.alert('اپلوډ ناکام شو', error.message || 'د کتاب فایلونه پورته نه شول.'); return; }
       }
@@ -2604,13 +2663,13 @@ export default function App() {
       setEditingGlobalItemId('');
       clearForm();
       setScreen('sectionFolder');
-      if (auth.currentUser && ['superadmin', 'admin', 'sectionAdmin', 'uploader'].includes(firebaseRole)) Alert.alert('کتاب ثبت شو', 'فایلونه د اډمین د وروستي تایید په تمه دي.');
+      if (auth.currentUser && hasPermission('createContent')) Alert.alert('کتاب ثبت شو', 'فایلونه د اډمین د وروستي تایید په تمه دي.');
       return;
     }
 
     const existingItem = editingGlobalItemId ? globalItems.find(item => item.id === editingGlobalItemId) : null;
-    if (firebaseRole === 'uploader' && existingItem) {
-      Alert.alert('اجازه نشته', 'اپلوډر یوازې نوی درس سپارلی شي؛ د موجودو خپرو شویو موادو سمون د لوی مدیر کار دی.');
+    if (existingItem && !hasPermission('editContent')) {
+      Alert.alert('اجازه نشته', 'ستاسو حساب د موجودو خپرو شویو موادو د اصلاح اجازه نه لري.');
       return;
     }
     const linkedAudioMaterial = formLinkedAudioMaterialId
@@ -2688,7 +2747,7 @@ export default function App() {
         description: formDescription,
         createdAt: new Date().toISOString()
       }));
-      if (auth.currentUser && ['superadmin', 'admin', 'sectionAdmin', 'uploader'].includes(firebaseRole)) {
+      if (auth.currentUser && hasPermission('createContent')) {
         try {
           const uploadedLessons = [];
           for (const lesson of separateLessons) uploadedLessons.push(await uploadLessonMedia(lesson));
@@ -2699,8 +2758,8 @@ export default function App() {
         }
       }
       await saveGlobalItems([...separateLessons, ...globalItems]);
-      if (firebaseRole !== 'uploader' && newItem.scholar && !scholarTaxonomy[newItem.scholar]) ensureScholarTaxonomy(newItem.scholar);
-      if (firebaseRole !== 'uploader' && newItem.scholar && !scholarNames.includes(newItem.scholar)) {
+      if (hasPermission('editContent') && newItem.scholar && !scholarTaxonomy[newItem.scholar]) ensureScholarTaxonomy(newItem.scholar);
+      if (hasPermission('editContent') && newItem.scholar && !scholarNames.includes(newItem.scholar)) {
         const updatedScholarNames = [...scholarNames, newItem.scholar];
         setScholarNames(updatedScholarNames);
         await saveData(STORAGE.scholarNames, updatedScholarNames);
@@ -2715,7 +2774,7 @@ export default function App() {
       return;
     }
 
-    if (auth.currentUser && ['superadmin', 'admin', 'sectionAdmin', 'uploader'].includes(firebaseRole)) {
+    if (auth.currentUser && hasPermission('createContent')) {
       try {
         Object.assign(newItem, await uploadLessonMedia(newItem));
       } catch (error) {
@@ -2734,8 +2793,8 @@ export default function App() {
         await saveFavorites(favorites.map(favorite => favorite.id === existingItem.id ? { ...favorite, ...newItem } : favorite));
       }
     }
-    if (firebaseRole !== 'uploader' && newItem.scholar && !scholarTaxonomy[newItem.scholar]) ensureScholarTaxonomy(newItem.scholar);
-    if (firebaseRole !== 'uploader' && newItem.scholar && !scholarNames.includes(newItem.scholar)) {
+    if (hasPermission('editContent') && newItem.scholar && !scholarTaxonomy[newItem.scholar]) ensureScholarTaxonomy(newItem.scholar);
+    if (hasPermission('editContent') && newItem.scholar && !scholarNames.includes(newItem.scholar)) {
       const updatedScholarNames = [...scholarNames, newItem.scholar];
       setScholarNames(updatedScholarNames);
       await saveData(STORAGE.scholarNames, updatedScholarNames);
@@ -2747,13 +2806,13 @@ export default function App() {
     else if (selectedAcademicBook) { setScreen('arabicBookDetails'); }
     else if (selectedAcademicType) { setScreen(selectedAcademicAyah ? 'quranAcademicAyahDetails' : 'quranAcademicAyahs'); }
     else { setScreen(savedAsQuran ? 'quran' : 'sectionFolder'); }
-    if (auth.currentUser && ['superadmin', 'admin', 'sectionAdmin', 'uploader'].includes(firebaseRole)) {
+    if (auth.currentUser && hasPermission('createContent')) {
       Alert.alert('درس ثبت شو', 'فایلونه آنلاین ته پورته شول او د اډمین د وروستي تایید په تمه دي. تر تایید مخکې عامو کاروونکو ته نه ښکاري.');
     }
   }
 
   async function deleteGlobalItem(id) {
-    if (firebaseUser && !['superadmin', 'admin'].includes(firebaseRole)) { Alert.alert('اجازه نشته', 'د درس حذف یوازې عمومي اډمین یا ستر اډمین کولی شي.'); return; }
+    if (firebaseUser && !hasPermission('deleteContent')) { Alert.alert('اجازه نشته', 'ستاسو حساب د درس د حذف اجازه نه لري.'); return; }
     Alert.alert('د درس حذف', 'ایا دا درس حذف کول غواړئ؟', [
       { text: 'نه', style: 'cancel' },
       {
@@ -3975,7 +4034,7 @@ export default function App() {
   // ==================================================
 
   async function saveSittaData(updated) {
-    if (firebaseUser && !['superadmin', 'admin'].includes(firebaseRole)) { Alert.alert('اجازه نشته', 'د حدیثي ځانګړي کتابتون اداره یوازې عمومي اډمین یا ستر اډمین کولی شي.'); return false; }
+    if (firebaseUser && !hasPermission('editContent')) { Alert.alert('اجازه نشته', 'ستاسو حساب د حدیثي کتابتون د اصلاح اجازه نه لري.'); return false; }
     setSittaData(updated);
     await saveData(STORAGE.sitta, updated);
   }
@@ -5446,13 +5505,13 @@ export default function App() {
   }
 
   async function saveFolderAdmin(next) {
-    if (firebaseUser && !['superadmin', 'admin'].includes(firebaseRole)) {
-      Alert.alert('اجازه نشته', 'د عمومي فولډرونو او کټګوریو بدلون یوازې عمومي اډمین یا ستر اډمین کولی شي.');
+    if (firebaseUser && !hasPermission('editContent')) {
+      Alert.alert('اجازه نشته', 'ستاسو حساب د فولډرونو او کټګوریو د بدلون اجازه نه لري.');
       return false;
     }
     setFolderAdmin(next);
     await saveData(STORAGE.folderAdmin, next);
-    if (firebaseUser && ['superadmin', 'admin'].includes(firebaseRole)) {
+    if (firebaseUser && hasPermission('editContent')) {
       try { await setDoc(doc(db, 'appConfig', 'public'), { folderAdmin: next, updatedBy: firebaseUser.uid, updatedAt: serverTimestamp() }, { merge: true }); }
       catch (error) { Alert.alert('د فولډرونو د همغږۍ ستونزه', 'فولډرونه په دې موبایل کې خوندي شول، خو نړیوال تنظیم ته ونه لېږل شول.'); }
     }
@@ -5594,13 +5653,13 @@ export default function App() {
   }
 
   async function addScholarFolder() {
-    if (firebaseUser && !['superadmin', 'admin'].includes(firebaseRole)) { Alert.alert('اجازه نشته', 'د علماوو عمومي لېست یوازې عمومي اډمین یا ستر اډمین بدلولی شي.'); return; }
+    if (firebaseUser && !hasPermission('editContent')) { Alert.alert('اجازه نشته', 'ستاسو حساب د علماوو د لېست د بدلولو اجازه نه لري.'); return; }
     const name = newScholarName.trim();
     if (!name) { Alert.alert('خبرتیا', 'د عالم نوم ولیکئ.'); return; }
     const updated = [...new Set([...scholarNames, name])];
     setScholarNames(updated);
     await saveData(STORAGE.scholarNames, updated);
-    if (firebaseUser && ['superadmin', 'admin'].includes(firebaseRole)) {
+    if (firebaseUser && hasPermission('editContent')) {
       try { await setDoc(doc(db, 'appConfig', 'public'), { scholarNames: updated, updatedBy: firebaseUser.uid, updatedAt: serverTimestamp() }, { merge: true }); }
       catch (error) { Alert.alert('د علماوو د لېست ستونزه', 'نومونه په دې موبایل کې خوندي شول، خو نړیوال تنظیم ته ونه لېږل شول.'); }
     }
@@ -8106,9 +8165,11 @@ export default function App() {
               <Text style={[styles.smallMuted, { marginTop: 6 }]}>{firebaseStatus || 'د مدیر یا اپلوډر حساب له لارې ننوتل وکړئ.'}</Text>
               {firebaseUser ? <>
                 <Text style={[styles.fileSelected, { marginTop: 8 }]}>اوسنی رول: {({ superadmin: 'ستر اډمین', admin: 'عمومي اډمین', sectionAdmin: 'د برخې اډمین', uploader: 'د موادو اپلوډر', user: 'عادي کارن' })[firebaseRole] || 'لا نه دی ټاکل شوی'}</Text>
-                {['superadmin', 'admin'].includes(firebaseRole) ? <>
+                <Text style={styles.smallMuted}>Firebase UID: {firebaseUser.uid} · فعال: {firebaseRoleData?.active === true ? 'هو' : 'نه'}</Text>
+                {hasPermission('manageLibrary') ? <>
                   <GoldButton title={firebaseBusy ? 'مهرباني وکړئ انتظار...' : '⬆ عمومي کتابتون آنلاین ته پورته کول'} secondary onPress={uploadLibraryToFirebase} />
                   <GoldButton title={firebaseBusy ? 'مهرباني وکړئ انتظار...' : '⬇ له آنلاین کتابتون څخه بیا راوستل'} secondary onPress={restoreLibraryFromFirebase} />
+                  {firebaseRole === 'superadmin' ? <>
                   <Text style={[styles.cardHeading, { color: settings.headingColor, marginTop: 14 }]}>نوی اډمین یا کارن ټاکل</Text>
                   <TextInput value={newRoleEmail} onChangeText={setNewRoleEmail} placeholder="د کارن ایمیل" placeholderTextColor={COLORS.muted} keyboardType="email-address" autoCapitalize="none" style={styles.designColorInput} textAlign="left" />
                   <View style={{ flexDirection: 'row-reverse', flexWrap: 'wrap', gap: 7, marginTop: 8 }}>
@@ -8117,9 +8178,32 @@ export default function App() {
                       return <GoldButton key={role} title={`${newRoleType === role ? '✓ ' : ''}${labels[role]}`} secondary onPress={() => setNewRoleType(role)} />;
                     })}
                   </View>
-                  {newRoleType === 'sectionAdmin' ? <TextInput value={newRoleSections} onChangeText={setNewRoleSections} placeholder="د اجازې علمي برخې؛ هره برخه په نوې کرښه ولیکئ" placeholderTextColor={COLORS.muted} multiline style={[styles.designColorInput, { minHeight: 75, marginTop: 8 }]} textAlign="right" /> : null}
-                  {newRoleType === 'uploader' ? <TextInput value={newRoleFolders} onChangeText={setNewRoleFolders} placeholder="اجازه لرونکي فولډرونه: برخه::فولډر (هر یو په نوې کرښه)" placeholderTextColor={COLORS.muted} multiline style={[styles.designColorInput, { minHeight: 68, marginTop: 8 }]} textAlign="right" /> : null}
+                  {!['superadmin','admin'].includes(newRoleType) ? <TextInput value={newRoleSections} onChangeText={setNewRoleSections} placeholder="د اجازې علمي برخې؛ هره برخه په نوې کرښه ولیکئ" placeholderTextColor={COLORS.muted} multiline style={[styles.designColorInput, { minHeight: 75, marginTop: 8 }]} textAlign="right" /> : null}
+                  {!['superadmin','admin'].includes(newRoleType) ? <TextInput value={newRoleFolders} onChangeText={setNewRoleFolders} placeholder="اجازه لرونکي فولډرونه: برخه::فولډر (هر یو په نوې کرښه)" placeholderTextColor={COLORS.muted} multiline style={[styles.designColorInput, { minHeight: 68, marginTop: 8 }]} textAlign="right" /> : null}
+                  {firebaseRole === 'superadmin' ? <View style={{ marginTop: 12, padding: 10, borderWidth: 1, borderColor: COLORS.border, borderRadius: 10 }}>
+                    <Text style={[styles.cardHeading,{color:settings.headingColor}]}>د دې حساب ځانګړې اجازې (د رول له عمومي واکونو پرته)</Text>
+                    {[['upload','فایلونه اپلوډول'],['createContent','نوي درسونه ثبتول'],['editContent','موجود درسونه او معلومات اصلاح کول'],['deleteContent','درسونه او معلومات حذفول'],['publish','درسونه تایید او خپرول'],['manageLibrary','عمومي کتابتون اپلوډ/بیا راوستل'],['editSettings','د اپ تنظیمات او ډیزاین بدلول'],['review','د درسونو کتنه'],['viewAudit','د فعالیتونو تاریخچه لیدل']].map(([key,label]) => <View key={key} style={styles.optionRow}><Text style={[styles.optionText,{color:settings.textColor}]}>{label}</Text><Switch value={newRolePermissions[key] !== undefined ? newRolePermissions[key] : (DEFAULT_ROLE_PERMISSIONS[newRoleType] || []).includes(key)} onValueChange={value => setNewRolePermissions(old => ({...old,[key]:value}))} trackColor={{false:COLORS.border,true:COLORS.green}} thumbColor={COLORS.gold}/></View>)}
+                    <Text style={styles.smallMuted}>که کومه ځانګړې اجازه نه وي ټاکل شوې، د رول اصلي واکونه کارول کېږي. د Super Admin ټول واکونه تل فعال وي.</Text>
+                  </View> : null}
                   <GoldButton title={firebaseBusy ? 'ثبت کېږي...' : 'د رول اجازه ثبت کړه'} onPress={assignFirebaseRole} />
+                  </> : null}
+                  {firebaseRole === 'superadmin' ? <>
+                    <Text style={[styles.cardHeading, { color: settings.headingColor, marginTop: 18 }]}>د ټولو Gmail حسابونو او اجازو مدیریت</Text>
+                    <Text style={styles.smallMuted}>دا لېست تر ۵۰۰ ثبت شوو اداري حسابونو پورې ښيي. د هر حساب رول، حالت او ټاکل شوې علمي برخې/فولډرونه دلته کتلای شئ.</Text>
+                    <GoldButton title="↻ د حسابونو لېست تازه کړه" secondary onPress={loadManagedUsers} />
+                    {managedUsers.map(user => <View key={user.uid} style={{ borderTopWidth: 1, borderColor: COLORS.border, paddingVertical: 9 }}>
+                      <Text style={{ color: COLORS.white, textAlign: 'left', fontWeight: 'bold' }}>{user.email || user.uid}</Text>
+                      <Text style={styles.smallMuted}>رول: {({ superadmin: 'ستر اډمین', admin: 'عمومي اډمین', sectionAdmin: 'د برخې اډمین', uploader: 'اپلوډر', user: 'عادي کارن' })[user.role] || user.role} · حالت: {user.active ? 'فعال' : 'بند'}</Text>
+                      {user.sectionKeys?.length ? <Text style={styles.smallMuted}>علمي برخې: {user.sectionKeys.join('، ')}</Text> : null}
+                      {user.folderKeys?.length ? <Text style={styles.smallMuted}>فولډرونه: {user.folderKeys.join('، ')}</Text> : null}
+                      {user.permissions && Object.keys(user.permissions).length ? <Text style={styles.smallMuted}>ځانګړې اجازې: {Object.entries(user.permissions).filter(([,v]) => v === true).map(([k]) => k).join('، ') || 'ټولې ځانګړې اجازې بندې دي'}</Text> : null}
+                      <View style={{ flexDirection: 'row-reverse', flexWrap: 'wrap', gap: 7, marginTop: 6 }}>
+                        <GoldButton title="اجازې سمول" secondary onPress={() => editManagedUser(user)} />
+                        {user.uid !== firebaseUser?.uid || user.role !== 'superadmin' ? <GoldButton title={user.active ? 'حساب بندول' : 'حساب فعالول'} secondary onPress={() => changeManagedUserStatus(user, !user.active)} /> : <Text style={styles.smallMuted}>اوسنی ستر اډمین</Text>}
+                      </View>
+                    </View>)}
+                    {!managedUsers.length ? <Text style={styles.smallMuted}>د حسابونو لېست لا نه دی لوستل شوی؛ پورته تڼۍ کېکاږئ.</Text> : null}
+                  </> : null}
                 </> : null}
                 {isReviewer ? <>
                   <Text style={[styles.cardHeading, { color: settings.headingColor, marginTop: 14 }]}>د کتنې په تمه درسونه ({pendingLessons.length})</Text>
@@ -8127,7 +8211,7 @@ export default function App() {
                     <Text style={{ color: COLORS.white, textAlign: 'right', fontWeight: 'bold' }}>{row.item?.title || 'بې نومه درس'}</Text>
                     <Text style={styles.smallMuted}>{row.section || ''} / {row.folder || ''} · {row.status === 'admin_review' ? 'د عمومي اډمین وروستۍ کتنه' : 'د برخې لومړنۍ کتنه'}</Text>
                     <View style={{ flexDirection: 'row-reverse', flexWrap: 'wrap', gap: 7, marginTop: 6 }}>
-                      {firebaseRole === 'sectionAdmin' ? <GoldButton title="✓ عمومي اډمین ته ولېږه" onPress={() => reviewPendingLesson(row.id, 'forward')} /> : <>
+                      {!hasPermission('publish') ? <GoldButton title="✓ عمومي اډمین ته ولېږه" onPress={() => reviewPendingLesson(row.id, 'forward')} /> : <>
                         <GoldButton title="✓ تایید او خپرول" onPress={() => reviewPendingLesson(row.id, 'approve')} />
                         <GoldButton title="ردول" secondary onPress={() => reviewPendingLesson(row.id, 'reject')} />
                       </>}
@@ -8135,12 +8219,14 @@ export default function App() {
                   </View>) : <Text style={styles.smallMuted}>اوس مهال د کتنې په تمه درس نشته.</Text>}
                   <GoldButton title="د کتنې لېست تازه کړه" secondary onPress={loadPendingLessons} />
                 </> : null}
-                {['superadmin', 'admin'].includes(firebaseRole) ? <View style={{ marginTop: 12, borderTopWidth: 1, borderColor: COLORS.border, paddingTop: 10 }}>
+                {hasPermission('viewAudit') ? <View style={{ marginTop: 12, borderTopWidth: 1, borderColor: COLORS.border, paddingTop: 10 }}>
                   <Text style={[styles.cardHeading, { color: settings.headingColor }]}>د اډمینانو د فعالیتونو تاریخچه</Text>
                   <GoldButton title="د وروستیو فعالیتونو ثبت ښکاره کړه" secondary onPress={loadAuditLogs} />
                   {auditLogs.map(row => <View key={row.id} style={{ paddingVertical: 6, borderBottomWidth: 1, borderColor: COLORS.border }}>
-                    <Text style={{ color: COLORS.white, textAlign: 'right' }}>{({ role_assigned: 'د کارن رول وټاکل شو', lesson_forwarded_to_admin: 'درس عمومي اډمین ته ولېږل شو', lesson_published: 'درس خپور شو', lesson_rejected: 'درس رد شو' })[row.action] || row.action}</Text>
+                    <Text style={{ color: COLORS.white, textAlign: 'right' }}>{({ role_assigned: 'د کارن رول وټاکل شو', lesson_forwarded_to_admin: 'درس عمومي اډمین ته ولېږل شو', lesson_published: 'درس خپور شو', lesson_rejected: 'درس رد شو', account_activated: 'حساب فعال شو', account_deactivated: 'حساب بند شو' })[row.action] || row.action}</Text>
                     <Text style={styles.smallMuted}>{row.target || ''} · {row.createdAt?.toDate ? row.createdAt.toDate().toLocaleString() : 'وخت ثبت شو'}</Text>
+                    {row.details?.oldRole || row.details?.newRole ? <Text style={styles.smallMuted}>رول: {row.details?.oldRole || 'نوی حساب'} ← {row.details?.newRole || ''}</Text> : null}
+                    {row.details?.permissions ? <Text style={styles.smallMuted}>د اجازو بدلون: {Object.entries(row.details.permissions).map(([key,value]) => `${key}: ${value ? 'فعاله' : 'بنده'}`).join('، ')}</Text> : null}
                   </View>)}
                 </View> : null}
                 {firebaseRole === 'sectionAdmin' ? <Text style={styles.smallMuted}>تاسو په خپلو ټاکل شوو علمي برخو کې درسونه او فایلونه ثبتولای شئ، د هماغو برخو Pending درسونه کتلی شئ او عمومي اډمین ته یې لېږلای شئ؛ وروستی خپرول د عمومي اډمین واک دی.</Text> : null}

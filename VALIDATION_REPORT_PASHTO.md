@@ -24,7 +24,7 @@
 ## اتوماتيک تخنیکي کتنې چې ترسره شوې
 
 - `App.js` د TypeScript parser له لارې د JSX/JavaScript د syntax کتنې څخه تېر شو (`tsc --allowJs --checkJs false --jsx react --noEmit --skipLibCheck --noResolve --target ES2020 App.js`).
-- `functions/index.js` او `functions/scripts/bootstrap-superadmin.js` د `node --check` څخه تېر شول.
+- `functions/index.js` او `functions/scripts/bootstrap_superadmins.js` د `node --check` څخه تېر شول.
 - د JSON تنظیماتي فایلونه د JSON parser له لارې تایید شول.
 - د نوم د اصلاح دندې په څو پښتو/عربي بېلګو وازمویل شوې.
 - د ZIP دننه د `App.js`، Firebase Functions، Firestore/Storage Rules، Expo config، assets او لارښودونو شتون تایید شو.
@@ -43,3 +43,22 @@
 دا ZIP د Library کې د کارن له خوا منل شوې وروستۍ محلي بشپړې پروژې او د پنځو رولونو ادغام له نسخې څخه جوړ شوی. د GitHub د `main/App.js` پخوانی ثبت شوی SHA له دې محلي `App.js` سره توپیر درلود؛ نو دا ZIP د GitHub له اوسني فایل سره د اتومات یو-پر-یو برابرۍ ادعا نه کوي. دا د بشپړې پروژې د اپلوډ لپاره جلا package دی. په دې کار کې GitHub ته هېڅ بدلون Push شوی نه دی.
 
 **د APK جوړول، Firebase Deploy او د موبایل حقیقي ازموینه لا نه ده شوې. دا د اپلوډ او ازموینې لپاره ادغام شوی package دی، نه د تولید لپاره تصدیق شوی release.**
+
+## د دې اصلاح شوې نسخې نوې کتنې
+
+- د Super Admin حسابونو د لېست لپاره `listUserRoles` callable اضافه شو (یوازې Super Admin).
+- د حساب فعال/بندولو لپاره `setUserRoleStatus` callable اضافه شو؛ وروستی فعال Super Admin نه بندېږي.
+- د موجود حساب د رول او ټاکل شوو اجازو د سمون لپاره د اپ په تنظیماتو کې فورم ته د معلوماتو راوړلو تڼۍ اضافه شوه.
+- د Firebase UID او د رول د `active` حالت تشخیصي ښودنه اضافه شوه.
+- د دې اصلاحاتو لپاره د Firebase Deploy او حقیقي Android/Firebase ازموینه لا هم د پروژې مالک باید ترسره کړي.
+
+## د Super Admin د فایل/اجازو د اصلاح نوې نسخه
+
+- د Super Admin د رول لپاره د Firestore او Storage د `active` چک اصلاح شو: که `active` ساحه ورکه وي Super Admin فعال ګڼل کېږي؛ که په ښکاره `false` وي، بند پاتې کېږي.
+- د Super Admin لپاره د ټولو فولډرونو اپلوډ او د محتوا د اصلاح واک په App، Firestore Rules او Storage Rules کې برابر شو.
+- د کارن د هر رول لپاره د `permissions` ځانګړی Map اضافه شو؛ د موجودې اجازې `true/false` د رول پر اصلي واک لومړیتوب لري.
+- د غیرعمومي رولونو لپاره د علمي برخې او `section::folder` د ټاکلو واک اضافه شو.
+- د کارنانو او رولونو اداره یوازې Super Admin ته محدوده شوه؛ عمومي Admin د Super Admin/عمومي Admin حسابونه نه شي بدلولی.
+- د موجود Super Admin د بیا Bootstrap کولو اړتیا نشته؛ د setup لارښود کې د Bootstrap د بیا اجرا منع لیکل شوې.
+- `node --check App.js`، `node --check functions/index.js` او د JSON فایلونو parsing بریالي شول.
+- د Firebase Rules د Emulator/Production د عملي ازموینې، Firebase Deploy، د Android build او د موبایل د حقیقي اپلوډ ازموینه لا نه ده ترسره شوې.

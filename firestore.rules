@@ -5,7 +5,9 @@ service cloud.firestore {
     function hasRole(roleName) {
       return signedIn()
         && exists(/databases/$(database)/documents/userRoles/$(request.auth.uid))
-        && get(/databases/$(database)/documents/userRoles/$(request.auth.uid)).data.active == true
+        && (get(/databases/$(database)/documents/userRoles/$(request.auth.uid)).data.active == true
+          || (get(/databases/$(database)/documents/userRoles/$(request.auth.uid)).data.role == 'superadmin'
+            && get(/databases/$(database)/documents/userRoles/$(request.auth.uid)).data.active != false))
         && get(/databases/$(database)/documents/userRoles/$(request.auth.uid)).data.role == roleName;
     }
     function roleDoc() { return get(/databases/$(database)/documents/userRoles/$(request.auth.uid)).data; }
@@ -14,26 +16,43 @@ service cloud.firestore {
     function isSectionAdmin() { return hasRole('sectionAdmin'); }
     function isUploader() { return hasRole('uploader'); }
     function isGlobalAdmin() { return isSuperAdmin() || isAdmin(); }
+    function hasPermission(permission) {
+      let data = signedIn() && exists(/databases/$(database)/documents/userRoles/$(request.auth.uid)) ? roleDoc() : {};
+      let custom = data.permissions is map && permission in data.permissions;
+      return isSuperAdmin() || (signedIn() && (custom
+        ? data.permissions[permission] == true
+        : (data.role == 'admin' && ['upload','createContent','editContent','deleteContent','publish','manageLibrary','editSettings','viewAudit','review'].hasAny([permission]))
+          || (data.role == 'sectionAdmin' && ['upload','createContent','editContent','review'].hasAny([permission]))
+          || (data.role == 'uploader' && ['upload','createContent'].hasAny([permission]))));
+    }
+    function canEditIn(section, folder) {
+      return hasPermission('editContent') && (isSuperAdmin() || isAdmin()
+        || (roleDoc().sectionKeys is list && roleDoc().sectionKeys.hasAny([section]))
+        || (roleDoc().folderKeys is list && roleDoc().folderKeys.hasAny([section + '::' + folder]))
+        || (roleDoc().sectionKeys is list && roleDoc().sectionKeys.size() == 0
+          && roleDoc().folderKeys is list && roleDoc().folderKeys.size() == 0));
+    }
     function canReviewSection(section) {
-      return isSectionAdmin() && roleDoc().sectionKeys is list && roleDoc().sectionKeys.hasAny([section]);
+      return hasPermission('review') && roleDoc().sectionKeys is list && roleDoc().sectionKeys.hasAny([section]);
     }
     function canUploadTo(section, folder) {
-      return isGlobalAdmin()
-        || (isSectionAdmin() && roleDoc().sectionKeys is list && roleDoc().sectionKeys.hasAny([section]))
-        || (isUploader() && roleDoc().folderKeys is list && roleDoc().folderKeys.hasAny([section + '::' + folder]));
+      return isSuperAdmin()
+        || (hasPermission('upload') && isAdmin())
+        || (hasPermission('upload') && roleDoc().sectionKeys is list && roleDoc().sectionKeys.hasAny([section]))
+        || (hasPermission('upload') && roleDoc().folderKeys is list && roleDoc().folderKeys.hasAny([section + '::' + folder]));
     }
 
     match /userRoles/{uid} {
-      allow get: if signedIn() && (request.auth.uid == uid || isGlobalAdmin());
-      allow list: if isGlobalAdmin();
+      allow get: if signedIn() && (request.auth.uid == uid || isSuperAdmin());
+      allow list: if isSuperAdmin();
       // رولونه یوازې Cloud Functions/Admin SDK ټاکي؛ اپلېکېشن یې مستقیم نه شي بدلولی.
       allow create, update, delete: if false;
     }
 
     match /mediaAssets/{mediaId} {
       allow read: if resource.data.status == 'approved'
-        || (signedIn() && (resource.data.ownerUid == request.auth.uid || isGlobalAdmin()
-          || canReviewSection(resource.data.section)));
+        || (signedIn() && (resource.data.ownerUid == request.auth.uid
+          || (hasPermission('review') && (isGlobalAdmin() || canReviewSection(resource.data.section)))));
       allow create: if signedIn()
         && request.resource.data.ownerUid == request.auth.uid
         && request.resource.data.mediaId == mediaId
@@ -46,23 +65,23 @@ service cloud.firestore {
         && request.resource.data.size <= 100 * 1024 * 1024
         && canUploadTo(request.resource.data.section, request.resource.data.folder)
         && request.resource.data.status == 'pending'
-        && (isGlobalAdmin() || isSectionAdmin() || isUploader());
-      allow update: if isGlobalAdmin();
-      allow delete: if isGlobalAdmin()
+        && (isSuperAdmin() || (hasPermission('upload') && (hasPermission('createContent')
+          || (hasPermission('editContent') && exists(/databases/$(database)/documents/publishedLessons/$(request.resource.data.itemId))))));
+      allow update: if false;
+      allow delete: if hasPermission('deleteContent')
         || (signedIn() && resource.data.ownerUid == request.auth.uid && resource.data.status == 'pending');
     }
 
     match /pendingLessons/{lessonId} {
-      allow read: if isGlobalAdmin()
-        || (signedIn() && resource.data.ownerUid == request.auth.uid)
-        || canReviewSection(resource.data.section);
+      allow read: if (signedIn() && resource.data.ownerUid == request.auth.uid)
+        || (hasPermission('review') && (isGlobalAdmin() || canReviewSection(resource.data.section)));
       allow create: if signedIn()
         && request.resource.data.ownerUid == request.auth.uid
         && request.resource.data.status == 'pending'
         && request.resource.data.section is string
         && request.resource.data.folder is string
-        && canUploadTo(request.resource.data.section, request.resource.data.folder)
-        && (isGlobalAdmin() || isSectionAdmin() || isUploader());
+        && (canUploadTo(request.resource.data.section, request.resource.data.folder) || canEditIn(request.resource.data.section, request.resource.data.folder))
+        && (isSuperAdmin() || (hasPermission('upload') && hasPermission('createContent')) || hasPermission('editContent'));
       // ټول بدلونونه د خوندي Cloud Function له لارې کېږي.
       allow update, delete: if false;
     }
@@ -74,16 +93,16 @@ service cloud.firestore {
 
     match /appConfig/{configId} {
       allow read: if true;
-      allow write: if isGlobalAdmin();
+      allow write: if hasPermission('manageLibrary') || hasPermission('editSettings') || hasPermission('editContent');
     }
 
     match /auditLogs/{logId} {
-      allow read: if isGlobalAdmin();
+      allow read: if hasPermission('viewAudit');
       allow write: if false;
     }
 
     match /library_sync_v1/{document=**} {
-      allow read, write: if isGlobalAdmin();
+      allow read, write: if hasPermission('manageLibrary');
     }
 
     match /system/{document=**} {
