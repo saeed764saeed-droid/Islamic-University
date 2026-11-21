@@ -1,6 +1,7 @@
 import { getApp, getApps, initializeApp } from 'firebase/app';
 import { getAuth, getReactNativePersistence, initializeAuth } from 'firebase/auth';
 import { getFirestore } from 'firebase/firestore';
+import { getStorage } from 'firebase/storage';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 // د میراث اسلام Firebase Web App تنظیمات
@@ -28,3 +29,4 @@ try {
 
 export const auth = firebaseAuth;
 export const db = getFirestore(firebaseApp);
+export const storage = getStorage(firebaseApp);

@@ -20,9 +20,11 @@ import {
 } from 'react-native';
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { auth, db } from './firebaseClient';
+import { auth, db, storage } from './firebaseClient';
 import { onAuthStateChanged, signInWithEmailAndPassword, signOut } from 'firebase/auth';
-import { doc, getDoc, setDoc } from 'firebase/firestore';
+import { collection, doc, getDoc, getDocs, onSnapshot, query, where, orderBy, limit, setDoc, deleteDoc, serverTimestamp } from 'firebase/firestore';
+import { ref as storageRef, uploadBytesResumable, deleteObject } from 'firebase/storage';
+import { getFunctions, httpsCallable } from 'firebase/functions';
 import * as DocumentPicker from 'expo-document-picker';
 import * as Sharing from 'expo-sharing';
 import * as Notifications from 'expo-notifications';
@@ -100,7 +102,8 @@ const STORAGE = {
   folderAdmin: 'folder_admin_v1',
   sharedResources: 'shared_academic_resources_v1',
   customSittaBooks: 'custom_hadith_books_v1',
-  scholarTaxonomy: 'scholar_taxonomy_v1'
+  scholarTaxonomy: 'scholar_taxonomy_v1',
+  offlineMedia: 'offline_media_v1'
 };
 
 // د علماوو فولډرونه د اډمین له خوا جوړېږي او د اپلوډ شوو درسونو له نومونو سره په اتومات ډول زیاتېږي.
@@ -447,6 +450,42 @@ function SecondsPicker({ label, value, onChange, maximum = 24 * 60 * 60 }) {
   );
 }
 
+// د پښتو، عربي او ګډو نومونو لپاره محدود محلي املايي وړاندیزونه.
+// دا د لغت‌لیک بشپړ بدیل نه دی؛ وړاندیزونه د کارن له تایید پرته نه خپرېږي.
+const MEDIA_NAME_CORRECTIONS = {
+  'قران': 'قرآن', 'القران': 'القرآن', 'قرآنکریم': 'قرآن کریم', 'قرانکریم': 'قرآن کریم',
+  'احادیث': 'احادیث', 'احاديث': 'أحاديث', 'الاحادیث': 'الأحاديث', 'الاحاديث': 'الأحاديث',
+  'حدیث': 'حدیث', 'الحدیث': 'الحديث', 'رسول الله': 'رسول الله ﷺ',
+  'سیرت': 'سیرت', 'السیره': 'السيرة', 'السيره': 'السيرة', 'تفسیر': 'تفسير',
+  'تفسیر': 'تفسیر', 'التفسیر': 'التفسير', 'فقه': 'فقه', 'الفقه': 'الفقه', 'عقیده': 'عقیده',
+  'عقيده': 'عقیده', 'دعاګانی': 'دعاګانې', 'اذکار': 'أذكار', 'الاذکار': 'الأذكار',
+  'صحابه': 'صحابه', 'صحابه کرام': 'صحابه کرام', 'علماء': 'علماء', 'علما': 'علماء',
+  'قرآنی': 'قرآني', 'اسلامی': 'اسلامي', 'نبوی': 'نبوي', 'نبوي': 'نبوي'
+};
+
+function correctMixedMediaName(value) {
+  let text = String(value || '').normalize('NFC').replace(/[\u064A]/g, 'ي').replace(/[\u0643]/g, 'ك');
+  Object.keys(MEDIA_NAME_CORRECTIONS).sort((a,b) => b.length-a.length).forEach(key => {
+    const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    text = text.replace(new RegExp(`(^|[\\s_،-])${escaped}(?=$|[\\s_،-])`, 'g'), (m, prefix) => `${prefix}${MEDIA_NAME_CORRECTIONS[key]}`);
+  });
+  return text.replace(/\s+/g, ' ').trim();
+}
+
+function suggestCorrectedMediaFilename(inputName) {
+  const raw = String(inputName || '').normalize('NFC');
+  const dot = raw.lastIndexOf('.');
+  const ext = dot > 0 ? raw.slice(dot).toLowerCase() : '';
+  let base = dot > 0 ? raw.slice(0, dot) : raw;
+  base = base.replace(/[\u0000-\u001f\u007f]/g, ' ')
+    .replace(/[\/\\:*?"<>|]/g, ' ')
+    .replace(/[._-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  base = correctMixedMediaName(base);
+  return `${base || 'نوی درس'}${ext}`;
+}
+
 export default function App() {
 
   // ------------------------------------------------
@@ -469,6 +508,14 @@ export default function App() {
   const [firebaseEmail, setFirebaseEmail] = useState('');
   const [firebasePassword, setFirebasePassword] = useState('');
   const [firebaseUser, setFirebaseUser] = useState(null);
+  const [firebaseRole, setFirebaseRole] = useState('');
+  const [firebaseRoleData, setFirebaseRoleData] = useState(null);
+  const [pendingLessons, setPendingLessons] = useState([]);
+  const [auditLogs, setAuditLogs] = useState([]);
+  const [newRoleEmail, setNewRoleEmail] = useState('');
+  const [newRoleType, setNewRoleType] = useState('uploader');
+  const [newRoleFolders, setNewRoleFolders] = useState('');
+  const [newRoleSections, setNewRoleSections] = useState('');
   const [firebaseBusy, setFirebaseBusy] = useState(false);
   const [firebaseStatus, setFirebaseStatus] = useState('');
 
@@ -587,6 +634,7 @@ export default function App() {
   const [pdfPageInput, setPdfPageInput] = useState('');
   const [pdfTotalPages, setPdfTotalPages] = useState(0);
   const [pdfInitialPage, setPdfInitialPage] = useState(1);
+  const [pdfSourceUri, setPdfSourceUri] = useState('');
   const audioSoundRef = useRef(null);
   const audioQueueRef = useRef([]);
   const audioItemRef = useRef(null);
@@ -648,6 +696,8 @@ export default function App() {
   const [formAttachments, setFormAttachments] = useState([]);
   const [formPDF, setFormPDF] = useState('');
   const [formPDFSize, setFormPDFSize] = useState(0);
+  const [formPDFName, setFormPDFName] = useState('');
+  const [formPDFCoverUri, setFormPDFCoverUri] = useState('');
   const [formVideo, setFormVideo] = useState('');
   const [formAudioStartSeconds, setFormAudioStartSeconds] = useState('');
   const [formPdfPage, setFormPdfPage] = useState('');
@@ -759,24 +809,294 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    let roleUnsubscribe = null;
     const unsubscribe = onAuthStateChanged(auth, user => {
+      if (roleUnsubscribe) { roleUnsubscribe(); roleUnsubscribe = null; }
       setFirebaseUser(user || null);
-      if (!user) setFirebaseStatus('له Firebase سره ننوتل نه دي شوي.');
-      else setFirebaseStatus(`مدیر حساب وصل دی: ${user.email || user.uid}`);
+      setFirebaseRole('');
+      setFirebaseRoleData(null);
+      setPendingLessons([]);
+      if (!user) {
+        setFirebaseStatus('له Firebase سره ننوتل نه دي شوي.');
+        return;
+      }
+      roleUnsubscribe = onSnapshot(doc(db, 'userRoles', user.uid), roleSnap => {
+        const roleData = roleSnap.exists() ? roleSnap.data() : null;
+        if (!roleData || roleData.active === false) {
+          setFirebaseRole('');
+          setFirebaseRoleData(null);
+          setFirebaseStatus('حساب وصل دی، خو د اپلېکېشن مدیر/اپلوډر اجازه ورته نه ده ټاکل شوې.');
+          return;
+        }
+        setFirebaseRole(roleData.role || 'user');
+        setFirebaseRoleData(roleData);
+        const roleLabels = { superadmin: 'ستر اډمین', admin: 'عمومي اډمین', sectionAdmin: 'د برخې اډمین', uploader: 'اپلوډر', user: 'عادي کارن' };
+        setFirebaseStatus(`حساب وصل دی — ${roleLabels[roleData.role] || 'عادي کارن'}`);
+      }, error => {
+        console.error('Role listener error:', error);
+        setFirebaseStatus('حساب وصل دی، خو د اجازې معلومات ونه لوستل شول. د Firebase قواعد وګورئ.');
+      });
     });
-    return unsubscribe;
+    return () => { unsubscribe(); if (roleUnsubscribe) roleUnsubscribe(); };
   }, []);
+
+  const isGlobalAdmin = ['superadmin', 'admin'].includes(firebaseRole);
+  const isReviewer = ['superadmin', 'admin', 'sectionAdmin'].includes(firebaseRole);
+
+  useEffect(() => {
+    if (firebaseUser && isReviewer) loadPendingLessons();
+  }, [firebaseUser, firebaseRole]);
+
+  async function loadPendingLessons() {
+    if (!auth.currentUser || !isReviewer) return;
+    try {
+      const base = collection(db, 'pendingLessons');
+      let queries = [];
+      if (firebaseRole === 'sectionAdmin') {
+        const sections = Array.isArray(firebaseRoleData?.sectionKeys) ? firebaseRoleData.sectionKeys.slice(0, 10) : [];
+        if (!sections.length) { setPendingLessons([]); return; }
+        queries = [query(base, where('section', 'in', sections))];
+      } else {
+        queries = [
+          query(base, where('status', '==', 'pending')),
+          query(base, where('status', '==', 'admin_review'))
+        ];
+      }
+      const snapshots = await Promise.all(queries.map(q => getDocs(q)));
+      const rows = snapshots.flatMap(snapshot => snapshot.docs.map(row => ({ id: row.id, ...row.data() })))
+        .filter(row => ['pending', 'admin_review'].includes(row.status)
+          && (firebaseRole !== 'sectionAdmin' || row.status === 'pending'));
+      setPendingLessons(rows);
+    } catch (error) {
+      console.error('Pending lesson load error:', error);
+      setFirebaseStatus('د انتظار درسونو لېست ونه لوستل شو؛ د Firebase قواعد او د برخو اجازې وګورئ.');
+    }
+  }
+
+  async function loadAuditLogs() {
+    if (!auth.currentUser || !['superadmin', 'admin'].includes(firebaseRole)) return;
+    try {
+      const snapshot = await getDocs(query(collection(db, 'auditLogs'), orderBy('createdAt', 'desc'), limit(30)));
+      setAuditLogs(snapshot.docs.map(row => ({ id: row.id, ...row.data() })));
+    } catch (error) {
+      console.error('Audit log load error:', error);
+      Alert.alert('د ثبتونو ستونزه', 'د فعالیتونو تاریخچه ونه لوستل شوه. د Firestore Rules وګورئ.');
+    }
+  }
+
+  async function assignFirebaseRole() {
+    if (!['superadmin', 'admin'].includes(firebaseRole)) { Alert.alert('اجازه نشته', 'یوازې ستر اډمین یا عمومي اډمین د ټاکلو اجازه لري.'); return; }
+    if (firebaseRole === 'admin' && ['superadmin', 'admin'].includes(newRoleType)) { Alert.alert('اجازه نشته', 'عمومي اډمین بل عمومي اډمین یا ستر اډمین نه شي ټاکلی.'); return; }
+    const email = String(newRoleEmail || '').trim().toLowerCase();
+    if (!email) { Alert.alert('ایمیل اړین دی', 'د هغه کس ایمیل ولیکئ چې رول ورکوئ.'); return; }
+    const folderKeys = String(newRoleFolders || '').split(/[\n,،]+/).map(value => value.trim()).filter(Boolean);
+    const sectionKeys = String(newRoleSections || '').split(/[\n,،]+/).map(value => value.trim()).filter(Boolean);
+    try {
+      setFirebaseBusy(true);
+      const fn = httpsCallable(getFunctions(auth.app), 'setUserRoleByEmail');
+      await fn({ email, role: newRoleType, folderKeys, sectionKeys });
+      setNewRoleEmail(''); setNewRoleFolders(''); setNewRoleSections('');
+      Alert.alert('بریالی شو', 'د کارن رول او ټاکل شوې اجازې ثبت شوې.');
+    } catch (error) {
+      console.error('Role assignment error:', error);
+      Alert.alert('رول ونه ټاکل شو', error?.message || 'د رول ټاکلو پر مهال ستونزه رامنځته شوه.');
+    } finally { setFirebaseBusy(false); }
+  }
+
+  async function reviewPendingLesson(lessonId, decision) {
+    if (!isReviewer) return;
+    if (firebaseRole === 'sectionAdmin' && decision !== 'forward') return;
+    if (firebaseRole === 'admin' && decision === 'forward') return;
+    try {
+      setFirebaseBusy(true);
+      const fn = httpsCallable(getFunctions(auth.app), 'reviewPendingLesson');
+      await fn({ lessonId, decision });
+      await loadPendingLessons();
+      const messages = { approve: 'درس تایید او خپور شو.', reject: 'درس رد شو.', forward: 'درس د عمومي اډمین وروستۍ کتنې ته ولېږل شو.' };
+      Alert.alert('بشپړ شو', messages[decision] || 'عملیه بشپړه شوه.');
+    } catch (error) {
+      console.error('Lesson review error:', error);
+      Alert.alert('ستونزه', error?.message || 'د درس د بیاکتنې پر مهال ستونزه رامنځته شوه.');
+    } finally { setFirebaseBusy(false); }
+  }
+
+  function uploaderCanUseFolder(section, folder) {
+    if (['superadmin', 'admin'].includes(firebaseRole)) return true;
+    if (firebaseRole === 'sectionAdmin') {
+      const keys = Array.isArray(firebaseRoleData?.sectionKeys) ? firebaseRoleData.sectionKeys : [];
+      return keys.includes(section);
+    }
+    if (firebaseRole !== 'uploader') return false;
+    const keys = Array.isArray(firebaseRoleData?.folderKeys) ? firebaseRoleData.folderKeys : [];
+    return keys.includes(`${section}::${folder}`);
+  }
+
+  async function uploadLocalMediaFile(file, mediaType, itemId, section, folder) {
+    if (!file?.uri || file.mediaId || file.storagePath || /^https?:\/\//i.test(file.uri)) return file;
+    if (!auth.currentUser || !['superadmin', 'admin', 'sectionAdmin', 'uploader'].includes(firebaseRole)) {
+      throw new Error('د آنلاین فایل پورته کولو لپاره مجاز اداري حساب ته ننوزئ.');
+    }
+    if (!uploaderCanUseFolder(section, folder)) throw new Error('ستاسو حساب دې فولډر ته د اپلوډ اجازه نه لري.');
+    const sourceName = String(file.approvedName || file.name || file.originalName || `${mediaType}.bin`).trim();
+    const originalExt = String(file.originalName || file.name || '').match(/\.[^.]+$/)?.[0] || '';
+    const approvedWithExt = /\.[^.]+$/.test(sourceName) ? sourceName : `${sourceName}${originalExt}`;
+    const fileName = suggestCorrectedMediaFilename(approvedWithExt).replace(/[\/\\]/g, '_').slice(-120) || `${mediaType}.bin`;
+    const mediaId = `m_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+    const uid = auth.currentUser.uid;
+    const storagePath = `pending/${uid}/${mediaId}/${fileName}`;
+    const status = 'pending';
+    const mediaRef = doc(db, 'mediaAssets', mediaId);
+    try {
+      const response = await fetch(file.uri);
+      if (!response.ok && response.status !== 0) throw new Error('محلي فایل ونه لوستل شو.');
+      const blob = await response.blob();
+      if (blob.size > 100 * 1024 * 1024) throw new Error('د فایل اندازه له ۱۰۰ MB څخه زیاته ده؛ مهرباني وکړئ فایل کوچنی یا په برخو ووېشئ.');
+      await setDoc(mediaRef, {
+        mediaId, ownerUid: uid, itemId: String(itemId), section, folder, mediaType,
+        fileName, mimeType: file.mimeType || 'application/octet-stream',
+        size: Number(blob.size || file.size || 0), storagePath, status,
+        createdAt: serverTimestamp(), reviewedBy: null
+      });
+      const uploadTask = uploadBytesResumable(storageRef(storage, storagePath), blob, { contentType: file.mimeType || 'application/octet-stream' });
+      await new Promise((resolve, reject) => uploadTask.on('state_changed', snapshot => {
+        const percent = snapshot.totalBytes ? Math.round(snapshot.bytesTransferred / snapshot.totalBytes * 100) : 0;
+        setFirebaseStatus(`د فایل پورته کول: ${percent}%`);
+      }, reject, resolve));
+      try { blob.close?.(); } catch (error) {}
+      // د ډاونلوډ عام URL یوازې د لوی مدیر له تایید وروسته د Cloud Function له خوا جوړېږي.
+      return { ...file, storagePath, mediaId, reviewStatus: 'pending' };
+    } catch (error) {
+      try { await deleteObject(storageRef(storage, storagePath)); } catch (cleanupError) {}
+      try { await deleteDoc(mediaRef); } catch (cleanupError) {}
+      console.error('Media upload error:', error);
+      throw new Error(`د ${file.name || mediaType} فایل پورته نه شو: ${error.message || 'ناپېژندل شوې ستونزه'}`);
+    }
+  }
+
+  async function uploadLessonMedia(item) {
+    const itemId = String(item.id);
+    const section = item.section || selectedSection;
+    const folder = item.folder || selectedFolder;
+    if (!uploaderCanUseFolder(section, folder)) throw new Error('ستاسو حساب دې برخې/فولډر ته د درس د سپارلو اجازه نه لري.');
+    setFirebaseBusy(true);
+    const audioTracks = [];
+    const attachments = [];
+    const coverFiles = [];
+    let pdfFile = null;
+    let pdfCoverFile = null;
+    const pendingId = `${auth.currentUser.uid}_${itemId}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    try {
+      const sourceTracks = Array.isArray(item.audioTracks) && item.audioTracks.length
+        ? item.audioTracks
+        : (item.audio ? [{ id: 'main', name: item.title || 'آډیو', uri: item.audio }] : []);
+      if (sourceTracks.some(track => track?.nameApprovalStatus === 'pending')) {
+        throw new Error('د هر نوي آډیو فایل نوم لومړی په فورم کې تایید کړئ، بیا یې وسپارئ.');
+      }
+      for (const track of sourceTracks) {
+        const uploadedTrack = await uploadLocalMediaFile({ ...track, name: track.approvedName || track.name }, 'audio', itemId, section, folder);
+        audioTracks.push(uploadedTrack);
+        if (track.coverUri) {
+          const uploadedCover = await uploadLocalMediaFile({ uri: track.coverUri, name: `${track.approvedName || track.name || 'audio'}-cover.jpg`, mimeType: 'image/jpeg' }, 'cover', itemId, section, folder);
+          coverFiles.push(uploadedCover);
+          uploadedTrack.coverMediaId = uploadedCover.mediaId || '';
+          uploadedTrack.coverStoragePath = uploadedCover.storagePath || '';
+        }
+      }
+      for (const file of (item.attachments || [])) attachments.push(await uploadLocalMediaFile({ ...file, name: file.approvedName || file.name }, 'attachment', itemId, section, folder));
+      const pdfUploadName = String(item.pdfName || 'lesson').trim();
+      const pdfUploadFilename = /\.pdf$/i.test(pdfUploadName) ? pdfUploadName : `${pdfUploadName}.pdf`;
+      pdfFile = item.pdf ? await uploadLocalMediaFile({ uri: item.pdf, name: pdfUploadFilename, originalName: pdfUploadFilename, mimeType: 'application/pdf', size: item.pdfSize || 0, mediaId: item.pdfMediaId, storagePath: item.pdfStoragePath, reviewStatus: item.pdfReviewStatus }, 'pdf', itemId, section, folder) : null;
+      if (item.pdfCoverUri) {
+        pdfCoverFile = await uploadLocalMediaFile({ uri: item.pdfCoverUri, name: `${item.pdfName || item.title || 'pdf'}-cover.jpg`, mimeType: 'image/jpeg' }, 'cover', itemId, section, folder);
+        coverFiles.push(pdfCoverFile);
+      }
+      // یوازې نوي Pending فایلونه د بیاکتنې له پرېکړې سره تړل کېږي؛ مخکې تایید شوي فایلونه نه حذفېږي.
+      const allFiles = [...audioTracks, ...attachments, ...(pdfFile ? [pdfFile] : []), ...coverFiles];
+      const mediaIds = [...new Set(allFiles.filter(file => file?.mediaId && file?.storagePath && file?.reviewStatus === 'pending').map(file => file.mediaId))];
+      if (mediaIds.length > 50) throw new Error('په یوه درس کې تر ۵۰ ډېر فایلونه مه پورته کوئ؛ درسونه په څو برخو ووېشئ.');
+      if (firebaseRole === 'uploader' && mediaIds.length === 0) {
+        throw new Error('د اپلوډر لپاره لږ تر لږه یو نوی MP3 یا PDF فایل اړین دی.');
+      }
+      const pendingUri = file => file?.reviewStatus === 'pending' && file?.storagePath ? file.storagePath : file?.uri;
+      const cloudItem = {
+        ...item,
+        audioTracks: audioTracks.map(file => ({ ...file, uri: pendingUri(file) })),
+        audio: audioTracks[0] ? pendingUri(audioTracks[0]) : (item.audio || ''),
+        attachments: attachments.map(file => ({ ...file, uri: pendingUri(file) })),
+        pdf: pdfFile ? (pdfFile.reviewStatus === 'pending' && pdfFile.storagePath ? pdfFile.storagePath : pdfFile.uri) : (item.pdf || ''),
+        pdfMediaId: pdfFile?.mediaId || item.pdfMediaId || '',
+        pdfCoverUri: pdfCoverFile?.storagePath || item.pdfCoverUri || '',
+        pdfCoverMediaId: pdfCoverFile?.mediaId || item.pdfCoverMediaId || '',
+        mediaIds,
+        cloudReviewStatus: 'pending'
+      };
+      await setDoc(doc(db, 'pendingLessons', pendingId), {
+        item: cloudItem, ownerUid: auth.currentUser.uid, section, folder, scopeKey: `${section}::${folder}`,
+        status: 'pending', mediaIds, updatedAt: serverTimestamp()
+      });
+      if (isReviewer) await loadPendingLessons();
+      setFirebaseStatus(`«${item.title || 'نوی درس'}» د تایید په تمه آنلاین ثبت شو.`);
+      // په همدې موبایل کې اصلي محلي فایلونه ساتل کېږي؛ عام URL د تایید وروسته راځي.
+      return { ...item, audioTracks, attachments, mediaIds, pdfCoverMediaId: pdfCoverFile?.mediaId || item.pdfCoverMediaId || '', pdfCoverStoragePath: pdfCoverFile?.storagePath || item.pdfCoverStoragePath || '', cloudReviewStatus: 'pending' };
+    } catch (error) {
+      // که د یوه فایل یا د pending metadata ثبت ناکام شي، د همدې درس نیمګړي اپلوډونه پاکېږي.
+      const uploaded = [...audioTracks, ...attachments, ...(pdfFile ? [pdfFile] : []), ...coverFiles].filter(file => file?.mediaId && file?.storagePath && file?.reviewStatus === 'pending');
+      for (const file of uploaded) {
+        try { await deleteObject(storageRef(storage, file.storagePath)); } catch (cleanupError) {}
+        try { await deleteDoc(doc(db, 'mediaAssets', file.mediaId)); } catch (cleanupError) {}
+      }
+      try { await deleteDoc(doc(db, 'pendingLessons', pendingId)); } catch (cleanupError) {}
+      throw error;
+    } finally {
+      setFirebaseBusy(false);
+    }
+  }
+
+  async function syncPublishedLessonsForScope(section, folder, force = false) {
+    if (!section || !folder) return;
+    const scopeKey = `${section}::${folder}`;
+    try {
+      const rawSync = await AsyncStorage.getItem('published_scope_sync_v1');
+      const syncMap = rawSync ? JSON.parse(rawSync) : {};
+      const lastSync = Number(syncMap[scopeKey] || 0);
+      // د هر فولډر معلومات محلي cache کېږي؛ بې ضرورته د ټول کتابتون لوستل نه کېږي.
+      if (!force && Date.now() - lastSync < 5 * 60 * 1000) return;
+      const snapshot = await getDocs(query(collection(db, 'publishedLessons'), where('scopeKey', '==', scopeKey)));
+      const incoming = snapshot.docs.map(row => row.data()?.item).filter(item => item && item.id);
+      if (incoming.length) {
+        const latest = [...globalItems];
+        for (const item of incoming) {
+          const index = latest.findIndex(row => String(row.id) === String(item.id));
+          if (index >= 0) latest[index] = { ...latest[index], ...item };
+          else latest.unshift(item);
+        }
+        setGlobalItems(latest);
+        await saveData(STORAGE.global, latest);
+      }
+      syncMap[scopeKey] = Date.now();
+      await AsyncStorage.setItem('published_scope_sync_v1', JSON.stringify(syncMap));
+    } catch (error) {
+      // عام کارن چې انټرنېټ نه لري، خپل افلاین کتابتون عادي کاروي.
+      console.warn('Published folder sync skipped:', error?.message || error);
+    }
+  }
+
+  useEffect(() => {
+    if (!loading && ['sectionFolder', 'scholarSection', 'generalMaterials', 'quran', 'quranAcademicSurahs', 'quranAcademicAyahs', 'quranAcademicAyahDetails', 'arabicBookDetails'].includes(screen)) {
+      syncPublishedLessonsForScope(selectedSection, selectedFolder);
+    }
+  }, [loading, screen, selectedSection, selectedFolder, selectedFolderParent]);
 
   async function firebaseAdminLogin() {
     if (!firebaseEmail.trim() || !firebasePassword) {
-      Alert.alert('اړین معلومات', 'د مدیر ایمیل او پاسورډ ولیکئ.');
+      Alert.alert('اړین معلومات', 'د مدیر یا اپلوډر ایمیل او پاسورډ ولیکئ.');
       return;
     }
     try {
       setFirebaseBusy(true);
       await signInWithEmailAndPassword(auth, firebaseEmail.trim(), firebasePassword);
       setFirebasePassword('');
-      Alert.alert('بریالی', 'د مدیر حساب له Firebase سره وصل شو.');
+      Alert.alert('بریالی', 'حساب له Firebase سره وصل شو؛ اجازه به یې د ټاکل شوي رول له مخې وټاکل شي.');
     } catch (error) {
       console.error('Firebase login error:', error);
       Alert.alert('د ننوتلو ستونزه', 'ایمیل یا پاسورډ سم نه دی، یا د Firebase Authentication تنظیمات بشپړ نه دي.');
@@ -802,8 +1122,8 @@ export default function App() {
   ];
 
   async function uploadLibraryToFirebase() {
-    if (!auth.currentUser) {
-      Alert.alert('ننوتل اړین دي', 'لومړی د مدیر حساب له لارې Firebase ته ننوځئ.');
+    if (!auth.currentUser || !['superadmin', 'admin'].includes(firebaseRole)) {
+      Alert.alert('اجازه نشته', 'یوازې ستر اډمین یا عمومي اډمین کولی شي د کتابتون عمومي معلومات Firebase ته پورته کړي.');
       return;
     }
     Alert.alert(
@@ -818,7 +1138,11 @@ export default function App() {
             const manifest = { schemaVersion: 1, projectId: 'islamic-university-27d8f', updatedAt: new Date().toISOString(), updatedBy: auth.currentUser.uid, keys: FIREBASE_LIBRARY_KEYS, chunkCounts: {} };
             for (const key of FIREBASE_LIBRARY_KEYS) {
               const raw = await AsyncStorage.getItem(key);
-              const value = raw == null ? 'null' : raw;
+              let value = raw == null ? 'null' : raw;
+              if (key === STORAGE.global && raw != null) {
+                const rows = JSON.parse(raw);
+                value = JSON.stringify(Array.isArray(rows) ? rows.filter(row => row?.cloudReviewStatus !== 'pending') : rows);
+              }
               const chunks = value.match(/[\s\S]{1,100000}/g) || [''];
               manifest.chunkCounts[key] = chunks.length;
               for (let index = 0; index < chunks.length; index++) {
@@ -841,8 +1165,8 @@ export default function App() {
   }
 
   async function restoreLibraryFromFirebase() {
-    if (!auth.currentUser) {
-      Alert.alert('ننوتل اړین دي', 'لومړی د مدیر حساب له لارې Firebase ته ننوځئ.');
+    if (!auth.currentUser || !['superadmin', 'admin'].includes(firebaseRole)) {
+      Alert.alert('اجازه نشته', 'یوازې ستر اډمین یا عمومي اډمین کولی شي د عمومي کتابتون معلومات بېرته راولي.');
       return;
     }
     Alert.alert(
@@ -996,7 +1320,46 @@ export default function App() {
 
     setSettings(updated);
     await saveData(STORAGE.settings, updated);
+    if (firebaseUser && ['superadmin', 'admin'].includes(firebaseRole) && ['headingColor', 'textColor', 'fontFamily'].some(key => Object.prototype.hasOwnProperty.call(newSettings, key))) {
+      try {
+        await setDoc(doc(db, 'appConfig', 'public'), {
+          visualSettings: {
+            headingColor: updated.headingColor,
+            textColor: updated.textColor,
+            fontFamily: updated.fontFamily
+          },
+          updatedBy: firebaseUser.uid,
+          updatedAt: serverTimestamp()
+        }, { merge: true });
+      } catch (error) { console.warn('Global visual settings sync failed:', error?.message || error); }
+    }
   }
+
+  async function syncGlobalAppConfig() {
+    try {
+      const configSnap = await getDoc(doc(db, 'appConfig', 'public'));
+      if (!configSnap.exists()) return;
+      const config = configSnap.data() || {};
+      const visualSettings = config.visualSettings || {};
+      const updated = {
+        ...settings,
+        ...(Object.keys(visualSettings).length ? visualSettings : {}),
+        ...(config.homeDesign ? { homeDesign: { ...(settings.homeDesign || {}), ...config.homeDesign } } : {})
+      };
+      setSettings(updated);
+      await saveData(STORAGE.settings, updated);
+      if (config.folderAdmin) { setFolderAdmin(config.folderAdmin); await saveData(STORAGE.folderAdmin, config.folderAdmin); }
+      if (Array.isArray(config.scholarNames)) { setScholarNames(config.scholarNames); await saveData(STORAGE.scholarNames, config.scholarNames); }
+      if (config.scholarTaxonomy) { setScholarTaxonomy(config.scholarTaxonomy); await saveData(STORAGE.scholarTaxonomy, config.scholarTaxonomy); }
+    } catch (error) {
+      // که انټرنېټ نه وي، د کارن پخواني محلي تنظیمات کار کوي.
+      console.warn('Global app config sync skipped:', error?.message || error);
+    }
+  }
+
+  useEffect(() => {
+    if (!loading) syncGlobalAppConfig();
+  }, [loading]);
 
   const homeDesign = { ...DEFAULT_HOME_DESIGN, ...(settings.homeDesign || {}) };
 
@@ -1005,6 +1368,10 @@ export default function App() {
   }
 
   async function updateHomeDesign(patch, folderKey = null) {
+    if (firebaseUser && !['superadmin', 'admin'].includes(firebaseRole)) {
+      Alert.alert('اجازه نشته', 'د کورپاڼې عمومي ډیزاین او رنګونه یوازې ستر اډمین یا عمومي اډمین بدلولی شي.');
+      return;
+    }
     const current = { ...DEFAULT_HOME_DESIGN, ...(settings.homeDesign || {}) };
     let next;
     if (folderKey) {
@@ -1019,6 +1386,15 @@ export default function App() {
       next = { ...current, ...patch };
     }
     await updateSettings({ homeDesign: next });
+    if (firebaseUser && ['superadmin', 'admin'].includes(firebaseRole)) {
+      try {
+        await setDoc(doc(db, 'appConfig', 'public'), {
+          homeDesign: next,
+          updatedBy: firebaseUser.uid,
+          updatedAt: serverTimestamp()
+        }, { merge: true });
+      } catch (error) { Alert.alert('د نړیوال ډیزاین ستونزه', 'ډیزاین په دې موبایل کې خوندي شو، خو نړیوال تنظیم ته ونه لېږل شو.'); }
+    }
   }
 
   function homeFolderCardStyle(key, baseStyle) {
@@ -1225,6 +1601,8 @@ export default function App() {
     setFormAttachments([]);
     setFormPDF('');
     setFormPDFSize(0);
+    setFormPDFName('');
+    setFormPDFCoverUri('');
     setFormVideo('');
     setFormAudioStartSeconds('');
     setFormPdfPage('');
@@ -1433,8 +1811,12 @@ export default function App() {
           const durationSeconds = Number(file.duration) > 0 ? Number(file.duration) : await readAudioDurationSeconds(stableUri);
           added.push({
             id: `audio-${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${added.length}`,
-            name: String(file.name || `غږیز فایل ${added.length + 1}`).replace(/\.[^.]+$/, ''),
+            name: suggestCorrectedMediaFilename(file.name || `غږیز فایل ${added.length + 1}`).replace(/\.[^.]+$/, ''),
+            suggestedName: suggestCorrectedMediaFilename(file.name || `غږیز فایل ${added.length + 1}`).replace(/\.[^.]+$/, ''),
+            approvedName: '',
+            nameApprovalStatus: 'pending',
             originalName: file.name || '',
+            coverUri: '',
             uri: stableUri,
             mimeType: file.mimeType || 'audio/*',
             size: file.size || 0,
@@ -1474,7 +1856,23 @@ export default function App() {
   }
 
   function renameFormAudioTrack(trackId, name) {
-    setFormAudioTracks(previous => previous.map(track => track.id === trackId ? { ...track, name } : track));
+    setFormAudioTracks(previous => previous.map(track => track.id === trackId ? { ...track, name, approvedName: '', nameApprovalStatus: 'pending' } : track));
+  }
+
+  function confirmFormAudioTrackName(trackId) {
+    setFormAudioTracks(previous => previous.map(track => track.id === trackId
+      ? { ...track, approvedName: String(track.name || '').trim(), nameApprovalStatus: 'approved' }
+      : track));
+    Alert.alert('نوم تایید شو', 'دا نوم به د خپرېدو/ډاونلوډ لپاره د وروستي نوم په توګه وکارول شي.');
+  }
+
+  async function pickFormAudioTrackCover(trackId) {
+    try {
+      const result = await DocumentPicker.getDocumentAsync({ type: ['image/*'], copyToCacheDirectory: true, multiple: false });
+      if (result.canceled || !result.assets?.length) return;
+      const uri = await keepPickedFile(result.assets[0], 'lesson-audio-cover');
+      setFormAudioTracks(previous => previous.map(track => track.id === trackId ? { ...track, coverUri: uri } : track));
+    } catch (error) { Alert.alert('ستونزه', 'د دې آډیو پوښ عکس انتخاب نه شو.'); }
   }
 
   function removeFormAudioTrack(trackId) {
@@ -1638,7 +2036,8 @@ export default function App() {
         const stableUri = await keepPickedFile(file, 'pdf');
         setFormPDF(stableUri);
         setFormPDFSize(Number(file.size || 0));
-        if (!formTitle.trim() && file.name) setFormTitle(file.name);
+        setFormPDFName(suggestCorrectedMediaFilename(file.name || 'کتاب.pdf').replace(/\.[^.]+$/, ''));
+        if (!formTitle.trim() && file.name) setFormTitle(suggestCorrectedMediaFilename(file.name).replace(/\.[^.]+$/, ''));
 
         if (!formDescription) {
           setFormDescription(file.name || '');
@@ -1648,6 +2047,17 @@ export default function App() {
     } catch (error) {
       Alert.alert('ستونزه', 'PDF فایل انتخاب نه شو.');
     }
+  }
+
+
+  async function pickFormPdfCover() {
+    try {
+      const result = await DocumentPicker.getDocumentAsync({ type: ['image/*'], copyToCacheDirectory: true, multiple: false });
+      if (result.canceled || !result.assets?.length) return;
+      const asset = result.assets[0];
+      const uri = await keepPickedFile(asset, 'lesson-pdf-cover');
+      setFormPDFCoverUri(uri);
+    } catch (error) { Alert.alert('ستونزه', 'د PDF د پوښ عکس انتخاب نه شو.'); }
   }
 
   async function pickAudioCoverImage() {
@@ -2073,6 +2483,18 @@ export default function App() {
   }
 
   async function addGlobalItem() {
+    if (firebaseUser && !['superadmin', 'admin', 'sectionAdmin', 'uploader'].includes(firebaseRole)) {
+      Alert.alert('اجازه نشته', 'دا حساب د علمي درسونو د ثبت اجازه نه لري.');
+      return;
+    }
+    if (firebaseUser && firebaseRole === 'sectionAdmin' && !uploaderCanUseFolder(selectedSection, selectedFolder)) {
+      Alert.alert('اجازه نشته', 'تاسو یوازې خپلې ټاکل شوې علمي برخې کې درس ثبتولای شئ.');
+      return;
+    }
+    if (firebaseUser && firebaseRole === 'uploader' && editingGlobalItemId) {
+      Alert.alert('اجازه نشته', 'اپلوډر یوازې نوی درس سپارلی شي؛ د موجود درس اصلاح یوازې اډمین کولی شي.');
+      return;
+    }
     const savedAsQuran = quranMode;
     const parsedPageMap = savedAsQuran ? parseQuranPageMap(formPageMap) : [];
     const enteredPageMapParts = String(formPageMap || '').split(/[;،,\n]+/).filter(part => part.trim());
@@ -2144,6 +2566,10 @@ export default function App() {
 
     if (screen === 'arabicBookEditor') {
       const existingBook = editingGlobalItemId ? globalItems.find(item => item.id === editingGlobalItemId) : null;
+      if (firebaseRole === 'uploader' && existingBook) {
+        Alert.alert('اجازه نشته', 'اپلوډر یوازې نوی درس/کتاب سپارلی شي؛ د موجودو خپرو شویو موادو سمون د لوی مدیر کار دی.');
+        return;
+      }
       const book = {
         ...(existingBook || {}),
         id: existingBook?.id || `arabic-book-${Date.now()}`, 
@@ -2153,6 +2579,8 @@ export default function App() {
         source: formSource.trim(),
         permission: formPermission.trim(),
         pdf: formPDF,
+        pdfName: formPDFName || effectiveFormTitle,
+        pdfCoverUri: formPDFCoverUri,
         audio: formAudio,
         audioTracks: formAudioTracks.length ? formAudioTracks : (formAudio ? [{ id: `audio-${Date.now()}`, name: 'آډیو', uri: formAudio }] : []),
         attachments: formAttachments,
@@ -2166,15 +2594,25 @@ export default function App() {
         resourceType: 'arabicAcademicBook',
         createdAt: existingBook?.createdAt || new Date().toISOString()
       };
-      const updatedBooks = existingBook ? globalItems.map(item => item.id === existingBook.id ? book : item) : [book, ...globalItems];
+      let bookToSave = book;
+      if (auth.currentUser && ['superadmin', 'admin', 'sectionAdmin', 'uploader'].includes(firebaseRole)) {
+        try { bookToSave = await uploadLessonMedia(book); }
+        catch (error) { Alert.alert('اپلوډ ناکام شو', error.message || 'د کتاب فایلونه پورته نه شول.'); return; }
+      }
+      const updatedBooks = existingBook ? globalItems.map(item => item.id === existingBook.id ? bookToSave : item) : [bookToSave, ...globalItems];
       await saveGlobalItems(updatedBooks);
       setEditingGlobalItemId('');
       clearForm();
       setScreen('sectionFolder');
+      if (auth.currentUser && ['superadmin', 'admin', 'sectionAdmin', 'uploader'].includes(firebaseRole)) Alert.alert('کتاب ثبت شو', 'فایلونه د اډمین د وروستي تایید په تمه دي.');
       return;
     }
 
     const existingItem = editingGlobalItemId ? globalItems.find(item => item.id === editingGlobalItemId) : null;
+    if (firebaseRole === 'uploader' && existingItem) {
+      Alert.alert('اجازه نشته', 'اپلوډر یوازې نوی درس سپارلی شي؛ د موجودو خپرو شویو موادو سمون د لوی مدیر کار دی.');
+      return;
+    }
     const linkedAudioMaterial = formLinkedAudioMaterialId
       ? getLessonLinkableAudioMaterials().find(row => row.id === formLinkedAudioMaterialId)
       : null;
@@ -2197,6 +2635,8 @@ export default function App() {
       audioTracks: formAudioTracks.length ? formAudioTracks : (formAudio ? [{ id: `audio-${Date.now()}`, name: 'آډیو', uri: formAudio }] : []),
       attachments: formAttachments,
       pdf: formPDF,
+      pdfName: formPDFName || effectiveFormTitle,
+      pdfCoverUri: formPDFCoverUri || existingItem?.pdfCoverUri || '',
       pdfSize: formPDFSize || existingItem?.pdfSize || 0,
       video: formVideo,
       audioStartSeconds: parsedOptionalAudioStart,
@@ -2238,7 +2678,8 @@ export default function App() {
     };
 
     if (batchAudioAsLessons && formAudioTracks.length > 1 && !existingItem) {
-      const separateLessons = formAudioTracks.map((track, index) => ({
+      const uploadTracks = newItem.audioTracks?.length ? newItem.audioTracks : formAudioTracks;
+      let separateLessons = uploadTracks.map((track, index) => ({
         ...newItem,
         id: `batch-audio-${Date.now()}-${index}-${Math.random().toString(36).slice(2,7)}`,
         title: String(track.name || '').trim() || `درس ${index + 1}`,
@@ -2247,9 +2688,19 @@ export default function App() {
         description: formDescription,
         createdAt: new Date().toISOString()
       }));
+      if (auth.currentUser && ['superadmin', 'admin', 'sectionAdmin', 'uploader'].includes(firebaseRole)) {
+        try {
+          const uploadedLessons = [];
+          for (const lesson of separateLessons) uploadedLessons.push(await uploadLessonMedia(lesson));
+          separateLessons = uploadedLessons;
+        } catch (error) {
+          Alert.alert('اپلوډ ناکام شو', error.message || 'د درسونو فایلونه پورته نه شول.');
+          return;
+        }
+      }
       await saveGlobalItems([...separateLessons, ...globalItems]);
-      if (newItem.scholar && !scholarTaxonomy[newItem.scholar]) ensureScholarTaxonomy(newItem.scholar);
-      if (newItem.scholar && !scholarNames.includes(newItem.scholar)) {
+      if (firebaseRole !== 'uploader' && newItem.scholar && !scholarTaxonomy[newItem.scholar]) ensureScholarTaxonomy(newItem.scholar);
+      if (firebaseRole !== 'uploader' && newItem.scholar && !scholarNames.includes(newItem.scholar)) {
         const updatedScholarNames = [...scholarNames, newItem.scholar];
         setScholarNames(updatedScholarNames);
         await saveData(STORAGE.scholarNames, updatedScholarNames);
@@ -2264,6 +2715,15 @@ export default function App() {
       return;
     }
 
+    if (auth.currentUser && ['superadmin', 'admin', 'sectionAdmin', 'uploader'].includes(firebaseRole)) {
+      try {
+        Object.assign(newItem, await uploadLessonMedia(newItem));
+      } catch (error) {
+        Alert.alert('اپلوډ ناکام شو', error.message || 'د درس فایلونه پورته نه شول.');
+        return;
+      }
+    }
+
     const updatedGlobalItems = existingItem
       ? globalItems.map(item => item.id === existingItem.id ? newItem : item)
       : [newItem, ...globalItems];
@@ -2274,8 +2734,8 @@ export default function App() {
         await saveFavorites(favorites.map(favorite => favorite.id === existingItem.id ? { ...favorite, ...newItem } : favorite));
       }
     }
-    if (newItem.scholar && !scholarTaxonomy[newItem.scholar]) ensureScholarTaxonomy(newItem.scholar);
-    if (newItem.scholar && !scholarNames.includes(newItem.scholar)) {
+    if (firebaseRole !== 'uploader' && newItem.scholar && !scholarTaxonomy[newItem.scholar]) ensureScholarTaxonomy(newItem.scholar);
+    if (firebaseRole !== 'uploader' && newItem.scholar && !scholarNames.includes(newItem.scholar)) {
       const updatedScholarNames = [...scholarNames, newItem.scholar];
       setScholarNames(updatedScholarNames);
       await saveData(STORAGE.scholarNames, updatedScholarNames);
@@ -2287,9 +2747,13 @@ export default function App() {
     else if (selectedAcademicBook) { setScreen('arabicBookDetails'); }
     else if (selectedAcademicType) { setScreen(selectedAcademicAyah ? 'quranAcademicAyahDetails' : 'quranAcademicAyahs'); }
     else { setScreen(savedAsQuran ? 'quran' : 'sectionFolder'); }
+    if (auth.currentUser && ['superadmin', 'admin', 'sectionAdmin', 'uploader'].includes(firebaseRole)) {
+      Alert.alert('درس ثبت شو', 'فایلونه آنلاین ته پورته شول او د اډمین د وروستي تایید په تمه دي. تر تایید مخکې عامو کاروونکو ته نه ښکاري.');
+    }
   }
 
   async function deleteGlobalItem(id) {
+    if (firebaseUser && !['superadmin', 'admin'].includes(firebaseRole)) { Alert.alert('اجازه نشته', 'د درس حذف یوازې عمومي اډمین یا ستر اډمین کولی شي.'); return; }
     Alert.alert('د درس حذف', 'ایا دا درس حذف کول غواړئ؟', [
       { text: 'نه', style: 'cancel' },
       {
@@ -2348,7 +2812,9 @@ export default function App() {
         id: tracks.length > 1 || track.id !== 'main' ? `${item.id}::${track.id || index}` : item.id,
         title: tracks.length > 1 ? `${item.title} – ${track.name || `کلیپ ${index + 1}`}` : item.title,
         audio: track.uri,
-        audioTrackName: track.name || ''
+        audioTrackName: track.name || '',
+        approvedAudioFilename: track.approvedName || track.name || '',
+        audioCoverUri: track.coverUri || item.audioCoverUri || ''
       }));
     });
   }
@@ -2374,6 +2840,90 @@ export default function App() {
     } catch (error) {}
   }
 
+  async function getOfflineMediaUri(remoteUri) {
+    if (!remoteUri) return null;
+    try {
+      const raw = await AsyncStorage.getItem(STORAGE.offlineMedia);
+      const saved = raw ? JSON.parse(raw) : {};
+      const localUri = saved[remoteUri];
+      if (!localUri) return null;
+      const info = await FileSystem.getInfoAsync(localUri);
+      return info.exists ? localUri : null;
+    } catch (error) { return null; }
+  }
+
+  async function downloadMediaForOffline(remoteUri, displayName, mimeType, companionCoverUri = '') {
+    if (!remoteUri || !/^https?:\/\//i.test(remoteUri)) {
+      Alert.alert('فایل نشته', 'دا فایل آنلاین URI نه لري؛ افلاین کاپي نه شي ډاونلوډ کېدای.');
+      return null;
+    }
+    try {
+      const existingOffline = await getOfflineMediaUri(remoteUri);
+      if (existingOffline && !companionCoverUri) {
+        Alert.alert('مخکې ډاونلوډ شوی', 'دا فایل له مخکې په موبایل کې د افلاین کارونې لپاره خوندي دی.');
+        return existingOffline;
+      }
+      const existingCoverOffline = companionCoverUri ? await getOfflineMediaUri(`${remoteUri}::cover`) : null;
+      if (existingOffline && existingCoverOffline) {
+        Alert.alert('مخکې ډاونلوډ شوی', 'آډیو او پوښ دواړه له مخکې په موبایل کې خوندي دي.');
+        return existingOffline;
+      }
+      const directory = `${FileSystem.documentDirectory}offline-media/`;
+      const dirInfo = await FileSystem.getInfoAsync(directory);
+      if (!dirInfo.exists) await FileSystem.makeDirectoryAsync(directory, { intermediates: true });
+      const safeName = String(displayName || 'media-file').normalize('NFC').replace(/[\/\\:*?"<>|\u0000-\u001f]/g, '_').replace(/\s+/g, ' ').trim().slice(-100);
+      const extension = mimeType === 'application/pdf' ? (/\.pdf$/i.test(safeName) ? '' : '.pdf') : (/\.[a-z0-9]{2,5}$/i.test(safeName) ? '' : '.mp3');
+      let destination = `${directory}${safeName}${extension}`;
+      const destinationInfo = await FileSystem.getInfoAsync(destination);
+      if (destinationInfo.exists && !existingOffline) {
+        const cleanBase = safeName.replace(/\.[^.]+$/, '');
+        destination = `${directory}${cleanBase}_${Date.now()}${extension}`;
+      }
+      setFirebaseStatus('فایل د افلاین کارونې لپاره ډاونلوډ کېږي...');
+      const result = existingOffline ? { uri: existingOffline, status: 200 } : await FileSystem.downloadAsync(remoteUri, destination);
+      if (result.status < 200 || result.status >= 300) throw new Error(`HTTP ${result.status}`);
+      const raw = await AsyncStorage.getItem(STORAGE.offlineMedia);
+      const saved = raw ? JSON.parse(raw) : {};
+      saved[remoteUri] = result.uri;
+      saved[`${remoteUri}::filename`] = `${safeName}${extension}`;
+      let offlineCoverUri = '';
+      if (companionCoverUri && !existingCoverOffline) {
+        try {
+          const coverDestination = `${directory}${Date.now()}_${safeName.replace(/\.[^.]+$/, '')}_cover.jpg`;
+          if (/^https?:\/\//i.test(companionCoverUri)) {
+            const coverResult = await FileSystem.downloadAsync(companionCoverUri, coverDestination);
+            if (coverResult.status >= 200 && coverResult.status < 300) offlineCoverUri = coverResult.uri;
+          } else {
+            const coverInfo = await FileSystem.getInfoAsync(companionCoverUri);
+            if (coverInfo.exists) { await FileSystem.copyAsync({ from: companionCoverUri, to: coverDestination }); offlineCoverUri = coverDestination; }
+          }
+          if (offlineCoverUri) saved[`${remoteUri}::cover`] = offlineCoverUri;
+        } catch (coverError) { console.warn('Offline cover download skipped:', coverError?.message || coverError); }
+      }
+      await AsyncStorage.setItem(STORAGE.offlineMedia, JSON.stringify(saved));
+      setFirebaseStatus('فایل په دې موبایل کې د افلاین کارونې لپاره خوندي شو.');
+      Alert.alert('ډاونلوډ بشپړ شو', 'دا فایل اوس له انټرنېټ پرته هم پرانیستل کېدای شي.');
+      return result.uri;
+    } catch (error) {
+      console.error('Offline media download error:', error);
+      Alert.alert('ډاونلوډ ناکام شو', 'فایل ډاونلوډ نه شو. انټرنېټ، د فایل اجازه او د موبایل خالي ځای وګورئ.');
+      return null;
+    }
+  }
+
+  async function downloadCurrentAudioOffline() {
+    const item = audioItemRef.current;
+    if (!item?.audio) return;
+    const approved = String(item.approvedAudioFilename || '').trim();
+    const name = approved || item.title || item.audio.split('/').pop() || 'audio.mp3';
+    await downloadMediaForOffline(item.audio, name, 'audio/mpeg', item.audioCoverUri || settings.audioCoverImageUri || '');
+  }
+
+  async function downloadSelectedPdfOffline() {
+    if (!selectedItem?.pdf) return;
+    await downloadMediaForOffline(selectedItem.remotePdfUri || selectedItem.pdf, `${selectedItem.pdfName || selectedItem.pdfDisplayName || selectedItem.title || 'کتاب'}.pdf`, 'application/pdf', selectedItem.pdfCoverUri || '');
+  }
+
   async function startAudio(item, requestedPosition) {
     if (!item?.audio) {
       Alert.alert('آډیو نشته', 'د دې درس لپاره آډیو فایل نه دی ثبت شوی.');
@@ -2384,7 +2934,6 @@ export default function App() {
         try { audioSoundRef.current.pause(); audioSoundRef.current.clearLockScreenControls(); audioSoundRef.current.remove(); } catch (error) {}
         audioSoundRef.current = null;
       }
-      audioItemRef.current = item;
       audioQueueRef.current = getAudioQueue();
       audioFinishHandledRef.current = false;
       let startAt = Number.isFinite(requestedPosition) ? requestedPosition : Math.max(0, Number(item.audioStartSeconds || 0)) * 1000;
@@ -2406,7 +2955,11 @@ export default function App() {
       });
       if (endAt != null && (!Number.isFinite(endAt) || endAt <= startAt)) { Alert.alert('ناسم وخت', 'د آډیو پای وخت باید د پیل له وخت څخه وروسته وي.'); return; }
       pendingAudioSeekRef.current = startAt;
-      const player = createAudioPlayer(item.audio, { updateInterval: 500, downloadFirst: false });
+      const offlineUri = await getOfflineMediaUri(item.audio);
+      const offlineCoverUri = await getOfflineMediaUri(`${item.audio}::cover`);
+      if (offlineCoverUri) item = { ...item, audioCoverUri: offlineCoverUri };
+      audioItemRef.current = item;
+      const player = createAudioPlayer(offlineUri || item.audio, { updateInterval: 500, downloadFirst: false });
       audioSoundRef.current = player;
       player.addListener('playbackStatusUpdate', status => {
         if (!status.isLoaded) return;
@@ -2428,7 +2981,7 @@ export default function App() {
             title: item.title || 'میراث اسلام',
             artist: item.scholar || 'میراث اسلام',
             albumTitle: item.section || 'د علمي بیانونو کتابتون',
-            artworkUrl: Image.resolveAssetSource(require('./assets/mirath-islam-player-artwork.jpg'))?.uri
+            artworkUrl: item.audioCoverUri || settings.audioCoverImageUri || Image.resolveAssetSource(require('./assets/mirath-islam-player-artwork.jpg'))?.uri
           }, { showSeekBackward: true, showSeekForward: true });
         }
         const boundedEndAt = endAt != null && mapped.durationMillis > 0
@@ -2604,6 +3157,8 @@ export default function App() {
       } catch (error) {}
     }
     targetPage = Math.max(1, targetPage || 1);
+    const offlinePdfUri = await getOfflineMediaUri(item.pdf);
+    setPdfSourceUri(offlinePdfUri || item.pdf);
     setSelectedItem(item);
     setPdfInitialPage(targetPage);
     setPdfCurrentPage(targetPage);
@@ -3420,6 +3975,7 @@ export default function App() {
   // ==================================================
 
   async function saveSittaData(updated) {
+    if (firebaseUser && !['superadmin', 'admin'].includes(firebaseRole)) { Alert.alert('اجازه نشته', 'د حدیثي ځانګړي کتابتون اداره یوازې عمومي اډمین یا ستر اډمین کولی شي.'); return false; }
     setSittaData(updated);
     await saveData(STORAGE.sitta, updated);
   }
@@ -4007,6 +4563,8 @@ export default function App() {
     setFormAudio('');
     setFormAudioTracks([]);
     setFormPDF('');
+    setFormPDFName('');
+    setFormPDFCoverUri('');
     setEditorType('');
   }
 
@@ -4078,6 +4636,8 @@ export default function App() {
     setFormAudio('');
     setFormAudioTracks([]);
     setFormPDF('');
+    setFormPDFName('');
+    setFormPDFCoverUri('');
     setEditorType('');
   }
 
@@ -4423,6 +4983,8 @@ export default function App() {
     setFormAttachments(Array.isArray(item.attachments) ? item.attachments : []);
     setFormPDF(item.pdf || '');
     setFormPDFSize(Number(item.pdfSize || 0));
+    setFormPDFName(item.pdfName || item.pdfDisplayName || '');
+    setFormPDFCoverUri(item.pdfCoverUri || '');
     setFormVideo(item.video || '');
     setFormAudioStartSeconds(item.audioStartSeconds != null ? String(item.audioStartSeconds) : '');
     setFormPdfPage(item.pdfPage != null ? String(item.pdfPage) : '');
@@ -4884,8 +5446,16 @@ export default function App() {
   }
 
   async function saveFolderAdmin(next) {
+    if (firebaseUser && !['superadmin', 'admin'].includes(firebaseRole)) {
+      Alert.alert('اجازه نشته', 'د عمومي فولډرونو او کټګوریو بدلون یوازې عمومي اډمین یا ستر اډمین کولی شي.');
+      return false;
+    }
     setFolderAdmin(next);
     await saveData(STORAGE.folderAdmin, next);
+    if (firebaseUser && ['superadmin', 'admin'].includes(firebaseRole)) {
+      try { await setDoc(doc(db, 'appConfig', 'public'), { folderAdmin: next, updatedBy: firebaseUser.uid, updatedAt: serverTimestamp() }, { merge: true }); }
+      catch (error) { Alert.alert('د فولډرونو د همغږۍ ستونزه', 'فولډرونه په دې موبایل کې خوندي شول، خو نړیوال تنظیم ته ونه لېږل شول.'); }
+    }
   }
 
   async function addQuranExtraFolder() {
@@ -5024,11 +5594,16 @@ export default function App() {
   }
 
   async function addScholarFolder() {
+    if (firebaseUser && !['superadmin', 'admin'].includes(firebaseRole)) { Alert.alert('اجازه نشته', 'د علماوو عمومي لېست یوازې عمومي اډمین یا ستر اډمین بدلولی شي.'); return; }
     const name = newScholarName.trim();
     if (!name) { Alert.alert('خبرتیا', 'د عالم نوم ولیکئ.'); return; }
     const updated = [...new Set([...scholarNames, name])];
     setScholarNames(updated);
     await saveData(STORAGE.scholarNames, updated);
+    if (firebaseUser && ['superadmin', 'admin'].includes(firebaseRole)) {
+      try { await setDoc(doc(db, 'appConfig', 'public'), { scholarNames: updated, updatedBy: firebaseUser.uid, updatedAt: serverTimestamp() }, { merge: true }); }
+      catch (error) { Alert.alert('د علماوو د لېست ستونزه', 'نومونه په دې موبایل کې خوندي شول، خو نړیوال تنظیم ته ونه لېږل شول.'); }
+    }
     ensureScholarTaxonomy(name);
     setNewScholarName('');
   }
@@ -6408,6 +6983,17 @@ export default function App() {
                       <View style={{ flex: 1, minWidth: 150 }}>
                         <Text style={styles.smallMuted}>{index + 1}. اصلي فایل: {track.originalName || track.name} · {formatFileSize(track.size)}{track.durationSeconds ? ` · ${formatDuration(track.durationSeconds * 1000)}` : ''}</Text>
                         <TextInput value={track.name} onChangeText={value => renameFormAudioTrack(track.id, value)} placeholder="د درس/کلیپ نوم ولیکئ" placeholderTextColor={COLORS.muted} style={[styles.designColorInput, { marginTop: 5, paddingVertical: 6 }]} textAlign="right" />
+                        <Text style={[styles.smallMuted, { marginTop: 4 }]}>د پښتو/عربي املا وړاندیز: {track.suggestedName || track.name}</Text>
+                        <View style={{ flexDirection: 'row-reverse', flexWrap: 'wrap', alignItems: 'center', marginTop: 5 }}>
+                          <TouchableOpacity onPress={() => renameFormAudioTrack(track.id, track.suggestedName || track.name)} style={{ padding: 7, borderRadius: 8, backgroundColor: COLORS.card2, marginLeft: 6 }}><Text style={{ color: COLORS.gold, fontSize: 12 }}>وړاندیز وکاروه</Text></TouchableOpacity>
+                          <TouchableOpacity onPress={() => confirmFormAudioTrackName(track.id)} style={{ padding: 7, borderRadius: 8, backgroundColor: track.nameApprovalStatus === 'approved' ? COLORS.green : COLORS.card2, marginLeft: 6 }}>
+                            <Text style={{ color: COLORS.white, fontSize: 12 }}>{track.nameApprovalStatus === 'approved' ? '✓ نوم تایید شو' : 'نوم تایید کړه'}</Text>
+                          </TouchableOpacity>
+                          <TouchableOpacity onPress={() => pickFormAudioTrackCover(track.id)} style={{ padding: 7, borderRadius: 8, backgroundColor: COLORS.card2 }}>
+                            <Text style={{ color: COLORS.gold, fontSize: 12 }}>د آډیو پوښ وټاکه</Text>
+                          </TouchableOpacity>
+                          {track.coverUri ? <Image source={{ uri: track.coverUri }} style={{ width: 42, height: 42, borderRadius: 6, marginRight: 6 }} /> : null}
+                        </View>
                       </View>
                       <TouchableOpacity onPress={() => previewPickedAudioTrack(track)} style={{ padding: 8 }}><Ionicons name={formAudioPreviewId === track.id ? 'stop-circle' : 'play-circle'} size={24} color={COLORS.gold} /></TouchableOpacity>
                       <TouchableOpacity onPress={() => moveFormAudioTrack(index, -1)} style={{ padding: 6 }}><Ionicons name="arrow-up" size={18} color={COLORS.gold} /></TouchableOpacity>
@@ -6431,8 +7017,14 @@ export default function App() {
               />
 
               {formPDF ? (
-                <Text style={styles.fileSelected}>
-                  {t("PDF فایل انتخاب شو ✓")} · {formatFileSize(formPDFSize)}</Text>
+                <View style={{ marginTop: 6 }}>
+                  <Text style={styles.fileSelected}>{t("PDF فایل انتخاب شو ✓")} · {formatFileSize(formPDFSize)}</Text>
+                  <TextInput value={formPDFName} onChangeText={setFormPDFName} placeholder="د PDF سم نوم ولیکئ" placeholderTextColor={COLORS.muted} style={[styles.designColorInput, { marginTop: 6 }]} textAlign="right" />
+                  <Text style={styles.smallMuted}>د پښتو/عربي املا وړاندیز: {suggestCorrectedMediaFilename(formPDFName || 'کتاب').replace(/\.[^.]+$/, '')}</Text>
+                  <TouchableOpacity onPress={() => setFormPDFName(suggestCorrectedMediaFilename(formPDFName || 'کتاب.pdf').replace(/\.[^.]+$/, ''))} style={{ alignSelf: 'flex-end', padding: 7, marginTop: 4, backgroundColor: COLORS.card2, borderRadius: 8 }}><Text style={{ color: COLORS.gold }}>وړاندیز وکاروه</Text></TouchableOpacity>
+                  <TouchableOpacity onPress={pickFormPdfCover} style={{ alignSelf: 'flex-end', padding: 8, marginTop: 5, backgroundColor: COLORS.card2, borderRadius: 8 }}><Text style={{ color: COLORS.gold }}>د PDF پوښ عکس وټاکئ</Text></TouchableOpacity>
+                  {formPDFCoverUri ? <Image source={{ uri: formPDFCoverUri }} style={{ width: 64, height: 64, borderRadius: 8, alignSelf: 'flex-end', marginTop: 5 }} /> : null}
+                </View>
               ) : null}
               <GoldButton title="▣ اختیاري ویډیو وټاکئ" secondary onPress={pickVideo} />
               {formVideo ? <Text style={styles.fileSelected}>ویډیو انتخاب شوه ✓</Text> : <Text style={styles.smallMuted}>ویډیو هم اختیاري ده.</Text>}
@@ -6446,7 +7038,7 @@ export default function App() {
                   <Text style={styles.fileSelected}>نور ټاکل شوي فایلونه: {formAttachments.length}</Text>
                   {formAttachments.map((file, index) => (
                     <View key={file.id} style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 5 }}>
-                      <Text style={[styles.smallMuted, { flex: 1 }]} numberOfLines={2}>{index + 1}. {file.name} · {formatFileSize(file.size)}</Text>
+                      <Text style={[styles.smallMuted, { flex: 1 }]} numberOfLines={2}>{index + 1}. {file.approvedName || file.name} · {formatFileSize(file.size)}</Text>
                       <TouchableOpacity onPress={() => removeFormAttachment(file.id)} style={{ padding: 7 }}><Ionicons name="trash-outline" size={18} color={COLORS.red} /></TouchableOpacity>
                     </View>
                   ))}
@@ -6760,7 +7352,7 @@ export default function App() {
             <PageHeader title={t("د بیان اورېدل")} subtitle={audioItemRef.current?.scholar || 'آډیو پلیر'} onBack={goBack} />
             <View style={styles.audioPlayerCard}>
               <View style={{ width: 220, height: 220, alignSelf: 'center', borderRadius: 18, marginBottom: 16, overflow: 'hidden', backgroundColor: settings.audioCoverBackground || '#123D2A', borderWidth: 2, borderColor: COLORS.gold, alignItems: 'center', justifyContent: 'center' }}>
-                {settings.audioCoverImageUri ? <Image source={{ uri: settings.audioCoverImageUri }} style={{ position: 'absolute', width: '100%', height: '100%' }} resizeMode="cover" /> : null}
+                {(audioItemRef.current?.audioCoverUri || settings.audioCoverImageUri) ? <Image source={{ uri: audioItemRef.current?.audioCoverUri || settings.audioCoverImageUri }} style={{ position: 'absolute', width: '100%', height: '100%' }} resizeMode="cover" /> : null}
                 <Text style={{ color: settings.audioCoverTextColor || COLORS.gold, fontSize: 22, fontWeight: 'bold', textAlign: 'center', paddingHorizontal: 12 }}>{settings.audioCoverText || 'میراث اسلام'}</Text>
                 <Text style={{ color: settings.audioCoverTextColor || COLORS.gold, fontSize: 12, textAlign: 'center', paddingHorizontal: 12, marginTop: 9 }}>{settings.audioCoverSubtitle || ''}</Text>
               </View>
@@ -6793,6 +7385,7 @@ export default function App() {
                 ))}
               </View>
             </View>
+            <GoldButton title="⬇ دا آډیو د افلاین اورېدو لپاره ډاونلوډ کړه" secondary onPress={downloadCurrentAudioOffline} />
             <View style={styles.bookmarkCard}>
               <Text style={[styles.cardHeading, { color: settings.headingColor }]}>{t("دا ځای نښه او یادښت کړه")}</Text>
               <Text style={styles.bookmarkPosition}>{t("اوسنی وخت:")}{formatDuration(audioStatus.positionMillis)}</Text>
@@ -6821,11 +7414,14 @@ export default function App() {
               <Text numberOfLines={1} style={styles.pdfHeaderTitle}>{selectedItem?.title || 'کتاب'}</Text>
               <Text style={styles.pdfPageCounter}>{pdfCurrentPage}{selectedItem?.pdfPageEnd ? `–${selectedItem.pdfPageEnd}` : ''}/{pdfTotalPages || '—'}</Text>
             </View>
+            <TouchableOpacity style={{ paddingVertical: 7, alignItems: 'center', backgroundColor: COLORS.card }} onPress={downloadSelectedPdfOffline}>
+              <Text style={{ color: COLORS.goldLight, fontWeight: 'bold' }}>⬇ PDF د افلاین لوستلو لپاره ډاونلوډ کړه</Text>
+            </TouchableOpacity>
             <View style={styles.pdfViewerWrap}>
               {selectedItem?.pdf ? (
                 <Pdf
-                  key={`${selectedItem.id}-${pdfInitialPage}`}
-                  source={{ uri: selectedItem.pdf, cache: true }}
+                  key={`${selectedItem.id}-${pdfSourceUri || selectedItem.pdf}-${pdfInitialPage}`}
+                  source={{ uri: pdfSourceUri || selectedItem.pdf, cache: true }}
                   page={pdfInitialPage}
                   onLoadComplete={(numberOfPages) => {
                     setPdfTotalPages(numberOfPages);
@@ -6883,7 +7479,7 @@ export default function App() {
               <TextInput style={styles.bookmarkInput} value={pdfBookmarkText} onChangeText={setPdfBookmarkText} placeholder={t("د دې مخ شخصي یادښت (اختیاري)")} placeholderTextColor={COLORS.muted} multiline />
               <View style={styles.pdfActionRow}>
                 <TouchableOpacity style={styles.pdfActionButton} onPress={savePdfBookmark}><Text style={styles.pdfActionText}>{t("★ نښه خوندي کړه")}</Text></TouchableOpacity>
-                <TouchableOpacity style={styles.pdfActionButton} onPress={() => shareFile(selectedItem?.pdf, 'application/pdf')}><Text style={styles.pdfActionText}>{t("شریکول")}</Text></TouchableOpacity>
+                <TouchableOpacity style={styles.pdfActionButton} onPress={() => shareFile(pdfSourceUri || selectedItem?.pdf, 'application/pdf')}><Text style={styles.pdfActionText}>{t("شریکول")}</Text></TouchableOpacity>
                 <TouchableOpacity style={styles.pdfActionButton} onPress={() => setScreen('pdfMarks')}><Text style={styles.pdfActionText}>{t("نښې (")}{pdfMarks.length})</Text></TouchableOpacity>
               </View>
             </View>
@@ -7504,21 +8100,60 @@ export default function App() {
               <GoldButton title={backupBusy ? 'مهرباني وکړئ انتظار...' : '⬇ بشپړ ZIP بیک‌اپ بېرته راوستل'} secondary onPress={importManualBackup} />
             </View>}
 
-            {(!settingsSearch || ['firebase','آنلاین','فایربېس','کلاوډ','cloud'].some(word => settingsSearch.trim().toLowerCase().includes(word) || word.includes(settingsSearch.trim().toLowerCase()))) && <View style={styles.formCard}>
-              <Text style={[styles.cardHeading, { color: settings.headingColor }]}>د Firebase آنلاین کتابتون</Text>
+            {(!settingsSearch || ['firebase','آنلاین','فایربېس','کلاوډ','cloud','مدیر','اپلوډر'].some(word => settingsSearch.trim().toLowerCase().includes(word) || word.includes(settingsSearch.trim().toLowerCase()))) && <View style={styles.formCard}>
+              <Text style={[styles.cardHeading, { color: settings.headingColor }]}>د Firebase آنلاین کتابتون او د کارن اجازې</Text>
               <Text style={styles.smallMuted}>پروژه: islamic-university-27d8f</Text>
-              <Text style={[styles.smallMuted, { marginTop: 6 }]}>{firebaseStatus || 'د مدیر حساب له لارې ننوتل وکړئ.'}</Text>
+              <Text style={[styles.smallMuted, { marginTop: 6 }]}>{firebaseStatus || 'د مدیر یا اپلوډر حساب له لارې ننوتل وکړئ.'}</Text>
               {firebaseUser ? <>
-                <GoldButton title={firebaseBusy ? 'مهرباني وکړئ انتظار...' : '⬆ ګډ کتابتون آنلاین ته پورته کول'} secondary onPress={uploadLibraryToFirebase} />
-                <GoldButton title={firebaseBusy ? 'مهرباني وکړئ انتظار...' : '⬇ له آنلاین کتابتون څخه بیا راوستل'} secondary onPress={restoreLibraryFromFirebase} />
+                <Text style={[styles.fileSelected, { marginTop: 8 }]}>اوسنی رول: {({ superadmin: 'ستر اډمین', admin: 'عمومي اډمین', sectionAdmin: 'د برخې اډمین', uploader: 'د موادو اپلوډر', user: 'عادي کارن' })[firebaseRole] || 'لا نه دی ټاکل شوی'}</Text>
+                {['superadmin', 'admin'].includes(firebaseRole) ? <>
+                  <GoldButton title={firebaseBusy ? 'مهرباني وکړئ انتظار...' : '⬆ عمومي کتابتون آنلاین ته پورته کول'} secondary onPress={uploadLibraryToFirebase} />
+                  <GoldButton title={firebaseBusy ? 'مهرباني وکړئ انتظار...' : '⬇ له آنلاین کتابتون څخه بیا راوستل'} secondary onPress={restoreLibraryFromFirebase} />
+                  <Text style={[styles.cardHeading, { color: settings.headingColor, marginTop: 14 }]}>نوی اډمین یا کارن ټاکل</Text>
+                  <TextInput value={newRoleEmail} onChangeText={setNewRoleEmail} placeholder="د کارن ایمیل" placeholderTextColor={COLORS.muted} keyboardType="email-address" autoCapitalize="none" style={styles.designColorInput} textAlign="left" />
+                  <View style={{ flexDirection: 'row-reverse', flexWrap: 'wrap', gap: 7, marginTop: 8 }}>
+                    {(['superadmin', 'admin', 'sectionAdmin', 'uploader', 'user']).filter(role => firebaseRole === 'superadmin' || !['superadmin', 'admin'].includes(role)).map(role => {
+                      const labels = { superadmin: 'ستر اډمین', admin: 'عمومي اډمین', sectionAdmin: 'د برخې اډمین', uploader: 'اپلوډر', user: 'عادي کارن' };
+                      return <GoldButton key={role} title={`${newRoleType === role ? '✓ ' : ''}${labels[role]}`} secondary onPress={() => setNewRoleType(role)} />;
+                    })}
+                  </View>
+                  {newRoleType === 'sectionAdmin' ? <TextInput value={newRoleSections} onChangeText={setNewRoleSections} placeholder="د اجازې علمي برخې؛ هره برخه په نوې کرښه ولیکئ" placeholderTextColor={COLORS.muted} multiline style={[styles.designColorInput, { minHeight: 75, marginTop: 8 }]} textAlign="right" /> : null}
+                  {newRoleType === 'uploader' ? <TextInput value={newRoleFolders} onChangeText={setNewRoleFolders} placeholder="اجازه لرونکي فولډرونه: برخه::فولډر (هر یو په نوې کرښه)" placeholderTextColor={COLORS.muted} multiline style={[styles.designColorInput, { minHeight: 68, marginTop: 8 }]} textAlign="right" /> : null}
+                  <GoldButton title={firebaseBusy ? 'ثبت کېږي...' : 'د رول اجازه ثبت کړه'} onPress={assignFirebaseRole} />
+                </> : null}
+                {isReviewer ? <>
+                  <Text style={[styles.cardHeading, { color: settings.headingColor, marginTop: 14 }]}>د کتنې په تمه درسونه ({pendingLessons.length})</Text>
+                  {pendingLessons.length ? pendingLessons.map(row => <View key={row.id} style={{ borderTopWidth: 1, borderColor: COLORS.border, paddingVertical: 9 }}>
+                    <Text style={{ color: COLORS.white, textAlign: 'right', fontWeight: 'bold' }}>{row.item?.title || 'بې نومه درس'}</Text>
+                    <Text style={styles.smallMuted}>{row.section || ''} / {row.folder || ''} · {row.status === 'admin_review' ? 'د عمومي اډمین وروستۍ کتنه' : 'د برخې لومړنۍ کتنه'}</Text>
+                    <View style={{ flexDirection: 'row-reverse', flexWrap: 'wrap', gap: 7, marginTop: 6 }}>
+                      {firebaseRole === 'sectionAdmin' ? <GoldButton title="✓ عمومي اډمین ته ولېږه" onPress={() => reviewPendingLesson(row.id, 'forward')} /> : <>
+                        <GoldButton title="✓ تایید او خپرول" onPress={() => reviewPendingLesson(row.id, 'approve')} />
+                        <GoldButton title="ردول" secondary onPress={() => reviewPendingLesson(row.id, 'reject')} />
+                      </>}
+                    </View>
+                  </View>) : <Text style={styles.smallMuted}>اوس مهال د کتنې په تمه درس نشته.</Text>}
+                  <GoldButton title="د کتنې لېست تازه کړه" secondary onPress={loadPendingLessons} />
+                </> : null}
+                {['superadmin', 'admin'].includes(firebaseRole) ? <View style={{ marginTop: 12, borderTopWidth: 1, borderColor: COLORS.border, paddingTop: 10 }}>
+                  <Text style={[styles.cardHeading, { color: settings.headingColor }]}>د اډمینانو د فعالیتونو تاریخچه</Text>
+                  <GoldButton title="د وروستیو فعالیتونو ثبت ښکاره کړه" secondary onPress={loadAuditLogs} />
+                  {auditLogs.map(row => <View key={row.id} style={{ paddingVertical: 6, borderBottomWidth: 1, borderColor: COLORS.border }}>
+                    <Text style={{ color: COLORS.white, textAlign: 'right' }}>{({ role_assigned: 'د کارن رول وټاکل شو', lesson_forwarded_to_admin: 'درس عمومي اډمین ته ولېږل شو', lesson_published: 'درس خپور شو', lesson_rejected: 'درس رد شو' })[row.action] || row.action}</Text>
+                    <Text style={styles.smallMuted}>{row.target || ''} · {row.createdAt?.toDate ? row.createdAt.toDate().toLocaleString() : 'وخت ثبت شو'}</Text>
+                  </View>)}
+                </View> : null}
+                {firebaseRole === 'sectionAdmin' ? <Text style={styles.smallMuted}>تاسو په خپلو ټاکل شوو علمي برخو کې درسونه او فایلونه ثبتولای شئ، د هماغو برخو Pending درسونه کتلی شئ او عمومي اډمین ته یې لېږلای شئ؛ وروستی خپرول د عمومي اډمین واک دی.</Text> : null}
+                {firebaseRole === 'uploader' ? <Text style={styles.smallMuted}>تاسو یوازې خپلو ته ټاکل شوو فولډرونو ته درسونه او فایلونه پورته کولی شئ. خپرول د اډمین له تایید وروسته کېږي.</Text> : null}
+                {firebaseRole === 'user' ? <Text style={styles.smallMuted}>دا حساب د مدیریت یا اپلوډ اجازه نه لري؛ یوازې خپاره شوي مواد کارولی شي.</Text> : null}
                 <GoldButton title="له Firebase څخه وتل" secondary onPress={firebaseAdminLogout} />
               </> : <>
-                <TextInput value={firebaseEmail} onChangeText={setFirebaseEmail} placeholder="د مدیر ایمیل" placeholderTextColor={COLORS.muted} keyboardType="email-address" autoCapitalize="none" autoCorrect={false} style={[styles.designColorInput, { marginTop: 10 }]} textAlign="left" />
-                <TextInput value={firebasePassword} onChangeText={setFirebasePassword} placeholder="د مدیر پاسورډ" placeholderTextColor={COLORS.muted} secureTextEntry style={[styles.designColorInput, { marginTop: 8 }]} textAlign="left" />
-                <GoldButton title={firebaseBusy ? 'نښلول کېږي...' : 'د مدیر حساب سره Firebase ته ننوتل'} secondary onPress={firebaseAdminLogin} />
+                <TextInput value={firebaseEmail} onChangeText={setFirebaseEmail} placeholder="د مدیر/اپلوډر ایمیل" placeholderTextColor={COLORS.muted} keyboardType="email-address" autoCapitalize="none" autoCorrect={false} style={[styles.designColorInput, { marginTop: 10 }]} textAlign="left" />
+                <TextInput value={firebasePassword} onChangeText={setFirebasePassword} placeholder="پاسورډ" placeholderTextColor={COLORS.muted} secureTextEntry style={[styles.designColorInput, { marginTop: 8 }]} textAlign="left" />
+                <GoldButton title={firebaseBusy ? 'نښلول کېږي...' : 'Firebase ته ننوتل'} secondary onPress={firebaseAdminLogin} />
               </>}
               {firebaseBusy ? <View style={{ paddingVertical: 8, alignItems: 'center' }}><ActivityIndicator color={COLORS.gold} /><Text style={styles.smallMuted}>له آنلاین ډیټابېس سره اړیکه روانه ده...</Text></View> : null}
-              <Text style={[styles.smallMuted, { marginTop: 8 }]}>یادونه: دا پړاو یوازې د ګډ کتابتون معلومات همغږي کوي؛ شخصي معلومات او د آډیو/PDF اصلي فایلونه نه لېږدوي. د فایلونو آنلاین انتقال به د Firebase Storage تر تنظیم وروسته فعال شي.</Text>
+              <Text style={[styles.smallMuted, { marginTop: 8 }]}>د آډیو او PDF فایلونه په Firebase Storage کې ساتل کېږي؛ د اپلوډر فایلونه د برخې کتنې او د عمومي اډمین وروستي تایید مخکې نه خپرېږي. افلاین کارونې لپاره فایلونه په موبایل کې ډاونلوډ کېدای شي.</Text>
             </View>}
 
             {(!settingsSearch || 'ژبه language'.includes(settingsSearch.trim().toLowerCase())) && <>
