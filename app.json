@@ -1,0 +1,26 @@
+{
+  "expo": {
+    "name": "اسلامي علمي کتابتون",
+    "slug": "mirath-islam",
+    "owner": "altast",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "android": {
+      "package": "com.bookstore13579.mirathislam",
+      "versionCode": 1,
+      "permissions": [
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.DOWNLOAD_WITHOUT_NOTIFICATION",
+        "android.permission.ACCESS_NETWORK_STATE"
+      ]
+    },
+    "extra": {
+      "eas": {
+        "projectId": "2c17a660-64ca-416c-80f1-ab0b5b5a88f4"
+      }
+    },
+    "description": "اسلامي علمي کتابتون"
+  }
+}

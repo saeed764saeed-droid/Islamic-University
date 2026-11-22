@@ -1,0 +1,47 @@
+# د میراث اسلام – د Super Admin او اجازو اداره
+
+## مهم: لومړی Super Admin بیا Bootstrap مه کوئ
+
+که لومړی Super Admin مخکې په Firebase کې فعال شوی وي، د `functions/scripts/bootstrap_superadmins.js` سکریپټ بیا مه چلوئ. د دې نسخې لپاره د لومړي Super Admin موجود `userRoles/{Firebase Auth UID}` سند کارول کېږي.
+
+## د دې نسخې اصلاحات
+
+- Super Admin تل د ټولو علمي برخو او فولډرونو د اپلوډ، نوي درس، اصلاح، حذف، تایید/خپرولو، کتابتون، تنظیماتو او تاریخچې واک لري.
+- د Super Admin د رول سند که `active` ساحه ونه لري، د Super Admin په توګه فعال ګڼل کېږي؛ خو که `active: false` په څرګند ډول ثبت وي، حساب بند پاتې کېږي.
+- د Firestore او Storage قواعد د `superadmin` رول ته یو شان واک ورکوي؛ یوازې د اپ د ظاهري اجازې په بدلولو بسنه نه کوي.
+- Super Admin د تنظیماتو له Firebase برخې څخه د پنځو رولونو حسابونه ټاکي او د هر حساب ځانګړې اجازې بدلوي.
+- ځانګړې اجازې د `userRoles/{uid}.permissions` په Map کې ساتل کېږي. که د اجازې کلید موجود وي، هماغه `true/false` د رول پر عمومي واک لومړیتوب لري؛ که کلید نه وي، د رول اصلي واکونه کارول کېږي.
+- د اپلوډ لپاره د غیرعمومي رولونو حساب ته لږ تر لږه یوه علمي برخه (`sectionKeys`) یا مشخص فولډر (`folderKeys` په `برخه::فولډر` بڼه) ټاکل کېږي.
+- د وروستي فعال Super Admin بندول یا له Super Admin رول څخه ایستل منع دي.
+- عمومي Admin نه شي کولای د Super Admin یا بل عمومي Admin حساب بدل کړي؛ د کارنانو او رولونو ټاکل یوازې Super Admin کوي.
+- د اجازو بدلونونه د `auditLogs` په ټولګه کې ثبتېږي.
+
+## په اپ کې د کارولو طریقه
+
+1. له خپل مخکېني فعال Super Admin Gmail سره ننوتل وکړئ.
+2. Settings > د Firebase آنلاین کتابتون او د کارن اجازې ته لاړ شئ.
+3. د حسابونو لېست تازه کړئ.
+4. د نوي حساب لپاره د Gmail ایمیل ولیکئ، رول وټاکئ، او د رول له مخې علمي برخې/فولډرونه وټاکئ.
+5. د ځانګړو اجازو Switchونه فعال یا بند کړئ. د رول اصلي اجازې د لومړي ځل لپاره ښکاري؛ د Switch بدلول د هماغې اجازې ځانګړی override ثبتوي.
+6. د موجود حساب د بدلولو لپاره «اجازې سمول» وټاکئ، بدلون وکړئ او «د رول اجازه ثبت کړه» کېکاږئ.
+7. د حساب د بندولو/فعالولو لپاره د هماغه حساب د حالت تڼۍ وکاروئ.
+
+## د Deploy لارښوونې
+
+په پروژه کې:
+
+```bash
+npm install
+cd functions
+npm install
+cd ..
+firebase login
+firebase use islamic-university-27d8f
+firebase deploy --only firestore:rules,storage,functions
+```
+
+دا Deploy د Firestore Rules، Storage Rules او Cloud Functions تازه کوي. **Bootstrap مه چلوئ**؛ ځکه لومړی Super Admin مخکې فعال شوی دی.
+
+## د Super Admin د اپلوډ د خطا تشخیص
+
+په Settings کې د Firebase برخې تر څنګ ښکاره شوی UID باید د Firebase Authentication د هماغه ننوتلي حساب UID وي، او Firestore کې باید `userRoles/{هماغه UID}` سند موجود وي چې `role: "superadmin"` ولري. د دې نسخې قواعد د دې UID د رول سند له مخې واک تاییدوي.

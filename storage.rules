@@ -1,0 +1,71 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    function signedIn() { return request.auth != null; }
+    function rolePath(uid) { return /databases/(default)/documents/userRoles/$(uid); }
+    function roleData(uid) { return firestore.get(rolePath(uid)).data; }
+    function hasRole(roleName) {
+      return signedIn() && firestore.exists(rolePath(request.auth.uid))
+        && (roleData(request.auth.uid).active == true
+          || (roleData(request.auth.uid).role == 'superadmin' && roleData(request.auth.uid).active != false))
+        && roleData(request.auth.uid).role == roleName;
+    }
+    function isSuperAdmin() { return hasRole('superadmin'); }
+    function isAdmin() { return hasRole('admin'); }
+    function isUploader() { return hasRole('uploader'); }
+    function isSectionAdmin() { return hasRole('sectionAdmin'); }
+    function isGlobalAdmin() { return isSuperAdmin() || isAdmin(); }
+    function hasPermission(permission) {
+      let data = signedIn() && firestore.exists(rolePath(request.auth.uid)) ? roleData(request.auth.uid) : {};
+      let custom = data.permissions is map && permission in data.permissions;
+      return isSuperAdmin() || (signedIn() && (custom
+        ? data.permissions[permission] == true
+        : (data.role == 'admin' && ['upload','createContent','editContent','deleteContent','publish','manageLibrary','editSettings','viewAudit','review'].hasAny([permission]))
+          || (data.role == 'sectionAdmin' && ['upload','createContent','editContent','review'].hasAny([permission]))
+          || (data.role == 'uploader' && ['upload','createContent'].hasAny([permission]))));
+    }
+    function mediaPath(mediaId) { return /databases/(default)/documents/mediaAssets/$(mediaId); }
+    function mediaData(mediaId) { return firestore.get(mediaPath(mediaId)).data; }
+    function folderAllowed(section, folder) {
+      return isSuperAdmin()
+        || (hasPermission('upload') && isAdmin())
+        || (hasPermission('upload') && roleData(request.auth.uid).sectionKeys is list
+          && roleData(request.auth.uid).sectionKeys.hasAny([section]))
+        || (hasPermission('upload') && roleData(request.auth.uid).folderKeys is list
+          && roleData(request.auth.uid).folderKeys.hasAny([section + '::' + folder]));
+    }
+
+    match /pending/{uid}/{mediaId}/{fileName} {
+      allow create: if signedIn()
+        && request.auth.uid == uid
+        && firestore.exists(mediaPath(mediaId))
+        && mediaData(mediaId).ownerUid == uid
+        && mediaData(mediaId).storagePath == 'pending/' + uid + '/' + mediaId + '/' + fileName
+        && folderAllowed(mediaData(mediaId).section, mediaData(mediaId).folder)
+        && mediaData(mediaId).status == 'pending'
+        && (isSuperAdmin() || hasPermission('upload'))
+        && request.resource.size <= 100 * 1024 * 1024
+        && request.resource.contentType != null
+        && (request.resource.contentType.matches('audio/.*')
+          || request.resource.contentType == 'application/pdf'
+          || request.resource.contentType.matches('image/.*')
+          || request.resource.contentType.matches('video/.*')
+          || request.resource.contentType == 'application/msword'
+          || request.resource.contentType.matches('application/vnd.*')
+          || request.resource.contentType == 'text/plain'
+          || request.resource.contentType == 'application/octet-stream');
+      allow read: if firestore.exists(mediaPath(mediaId))
+        && (mediaData(mediaId).status == 'approved'
+          || (signedIn() && (request.auth.uid == uid
+            || (hasPermission('review') && (isGlobalAdmin()
+              || (roleData(request.auth.uid).sectionKeys is list
+                && roleData(request.auth.uid).sectionKeys.hasAny([mediaData(mediaId).section])))))));
+      allow delete: if hasPermission('deleteContent')
+        || (signedIn() && request.auth.uid == uid
+          && firestore.exists(mediaPath(mediaId))
+          && mediaData(mediaId).ownerUid == uid
+          && mediaData(mediaId).status == 'pending');
+      allow update: if false;
+    }
+  }
+}

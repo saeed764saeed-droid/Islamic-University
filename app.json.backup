@@ -1,0 +1,20 @@
+{
+  "expo": {
+    "name": "اسلامي علمي کتابتون",
+    "slug": "nasnas",
+    "owner": "nasnas45s-team",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "android": {
+      "package": "com.bookstore13579.mirathislam",
+      "versionCode": 1
+    },
+    "extra": {
+      "eas": {
+        "projectId": "1109c517-7ec7-4d5d-98ba-6988f840b93c"
+      }
+    },
+    "description": "اسلامي علمي کتابتون"
+  }
+}
