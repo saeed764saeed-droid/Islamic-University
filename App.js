@@ -20,10 +20,10 @@ import {
 } from 'react-native';
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { auth, db, storage } from './firebaseClient';
+import { auth, db } from './firebaseClient';
 import { onAuthStateChanged, signInWithEmailAndPassword, signOut } from 'firebase/auth';
 import { collection, doc, getDoc, getDocs, onSnapshot, query, where, orderBy, limit, setDoc, deleteDoc, serverTimestamp } from 'firebase/firestore';
-import { ref as storageRef, uploadBytesResumable, deleteObject } from 'firebase/storage';
+
 import { getFunctions, httpsCallable } from 'firebase/functions';
 import * as DocumentPicker from 'expo-document-picker';
 import * as Sharing from 'expo-sharing';
@@ -42,6 +42,9 @@ import {
   CalculationMethod,
   Madhab
 } from 'adhan';
+
+// Cloudflare R2 Worker: د رسنیو فایلونه له دې لارې اپلوډ او پاکېږي.
+const MEDIA_WORKER_URL = 'https://islamic-university-storage.saeed764saeed.workers.dev';
 
 // ==================================================
 // 01 - د خبرتیاوو تنظیمات
@@ -963,7 +966,14 @@ export default function App() {
     try {
       setFirebaseBusy(true);
       const fn = httpsCallable(getFunctions(auth.app), 'reviewPendingLesson');
-      await fn({ lessonId, decision });
+      const reviewResult = await fn({ lessonId, decision });
+      if (decision === 'reject' && Array.isArray(reviewResult.data?.cleanupMediaIds)) {
+        const token = await auth.currentUser.getIdToken();
+        for (const mediaId of reviewResult.data.cleanupMediaIds) {
+          try { await fetch(`${MEDIA_WORKER_URL}/media/${encodeURIComponent(mediaId)}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } }); }
+          catch (cleanupError) { console.warn('R2 rejected media cleanup pending:', mediaId, cleanupError); }
+        }
+      }
       await loadPendingLessons();
       const messages = { approve: 'درس تایید او خپور شو.', reject: 'درس رد شو.', forward: 'درس د عمومي اډمین وروستۍ کتنې ته ولېږل شو.' };
       Alert.alert('بشپړ شو', messages[decision] || 'عملیه بشپړه شوه.');
@@ -982,7 +992,9 @@ export default function App() {
   }
 
   async function uploadLocalMediaFile(file, mediaType, itemId, section, folder) {
-    if (!file?.uri || file.mediaId || file.storagePath || /^https?:\/\//i.test(file.uri)) return file;
+    if (!file?.uri || /^https?:\/\//i.test(file.uri)) return file;
+    if (file.storageProvider === 'cloudflare-r2' && file.mediaId && file.storagePath) return file;
+    if (/^pending\//i.test(String(file.uri))) throw new Error('دا د پخواني سرور Pending فایل دی؛ اصلي فایل له موبایل څخه بیا انتخاب کړئ.');
     if (!auth.currentUser || !hasPermission('upload')) {
       throw new Error('د آنلاین فایل پورته کولو لپاره مجاز اداري حساب ته ننوزئ.');
     }
@@ -994,31 +1006,43 @@ export default function App() {
     const mediaId = `m_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
     const uid = auth.currentUser.uid;
     const storagePath = `pending/${uid}/${mediaId}/${fileName}`;
-    const status = 'pending';
     const mediaRef = doc(db, 'mediaAssets', mediaId);
+    let blob = null;
+    let metadataCreated = false;
     try {
       const response = await fetch(file.uri);
       if (!response.ok && response.status !== 0) throw new Error('محلي فایل ونه لوستل شو.');
-      const blob = await response.blob();
-      if (blob.size > 100 * 1024 * 1024) throw new Error('د فایل اندازه له ۱۰۰ MB څخه زیاته ده؛ مهرباني وکړئ فایل کوچنی یا په برخو ووېشئ.');
+      blob = await response.blob();
+      const size = Number(blob.size || file.size || 0);
+      if (!size) throw new Error('د فایل اندازه ونه پېژندل شوه.');
+      if (size > 100 * 1024 * 1024) throw new Error('د فایل اندازه له ۱۰۰ MB څخه زیاته ده؛ مهرباني وکړئ فایل کوچنی یا په برخو ووېشئ.');
+      const mimeType = file.mimeType || 'application/octet-stream';
       await setDoc(mediaRef, {
         mediaId, ownerUid: uid, itemId: String(itemId), section, folder, mediaType,
-        fileName, mimeType: file.mimeType || 'application/octet-stream',
-        size: Number(blob.size || file.size || 0), storagePath, status,
-        createdAt: serverTimestamp(), reviewedBy: null
+        fileName, mimeType, size, storagePath, status: 'pending',
+        createdAt: serverTimestamp(), reviewedBy: null, storageProvider: 'cloudflare-r2'
       });
-      const uploadTask = uploadBytesResumable(storageRef(storage, storagePath), blob, { contentType: file.mimeType || 'application/octet-stream' });
-      await new Promise((resolve, reject) => uploadTask.on('state_changed', snapshot => {
-        const percent = snapshot.totalBytes ? Math.round(snapshot.bytesTransferred / snapshot.totalBytes * 100) : 0;
-        setFirebaseStatus(`د فایل پورته کول: ${percent}%`);
-      }, reject, resolve));
+      metadataCreated = true;
+      const token = await auth.currentUser.getIdToken();
+      const uploadResponse = await fetch(`${MEDIA_WORKER_URL}/upload/${encodeURIComponent(mediaId)}`, {
+        method: 'PUT',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': mimeType, 'X-File-Size': String(size) },
+        body: blob
+      });
+      const uploadResult = await uploadResponse.json().catch(() => ({}));
+      if (!uploadResponse.ok || uploadResult.success !== true) throw new Error(uploadResult.error || `Cloudflare R2 اپلوډ ناکام شو (${uploadResponse.status}).`);
       try { blob.close?.(); } catch (error) {}
-      // د ډاونلوډ عام URL یوازې د لوی مدیر له تایید وروسته د Cloud Function له خوا جوړېږي.
-      return { ...file, storagePath, mediaId, reviewStatus: 'pending' };
+      return { ...file, storagePath, mediaId, reviewStatus: 'pending', storageProvider: 'cloudflare-r2' };
     } catch (error) {
-      try { await deleteObject(storageRef(storage, storagePath)); } catch (cleanupError) {}
-      try { await deleteDoc(mediaRef); } catch (cleanupError) {}
-      console.error('Media upload error:', error);
+      if (metadataCreated) {
+        try {
+          const token = await auth.currentUser.getIdToken();
+          await fetch(`${MEDIA_WORKER_URL}/media/${encodeURIComponent(mediaId)}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } });
+        } catch (cleanupError) {}
+        try { await deleteDoc(mediaRef); } catch (cleanupError) {}
+      }
+      try { blob?.close?.(); } catch (closeError) {}
+      console.error('R2 media upload error:', error);
       throw new Error(`د ${file.name || mediaType} فایل پورته نه شو: ${error.message || 'ناپېژندل شوې ستونزه'}`);
     }
   }
@@ -1101,7 +1125,10 @@ export default function App() {
       // که د یوه فایل یا د pending metadata ثبت ناکام شي، د همدې درس نیمګړي اپلوډونه پاکېږي.
       const uploaded = [...audioTracks, ...attachments, ...(pdfFile ? [pdfFile] : []), ...coverFiles].filter(file => file?.mediaId && file?.storagePath && file?.reviewStatus === 'pending');
       for (const file of uploaded) {
-        try { await deleteObject(storageRef(storage, file.storagePath)); } catch (cleanupError) {}
+        try {
+          const token = await auth.currentUser.getIdToken();
+          await fetch(`${MEDIA_WORKER_URL}/media/${encodeURIComponent(file.mediaId)}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } });
+        } catch (cleanupError) {}
         try { await deleteDoc(doc(db, 'mediaAssets', file.mediaId)); } catch (cleanupError) {}
       }
       try { await deleteDoc(doc(db, 'pendingLessons', pendingId)); } catch (cleanupError) {}
