@@ -1,10 +1,8 @@
-
 name: Deploy Cloudflare Worker
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
     paths:
       - "worker/**"
       - ".github/workflows/deploy-worker.yml"
@@ -13,19 +11,15 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 22
-
       - name: Install Wrangler
         run: npm install --global wrangler
-
       - name: Deploy Worker
         working-directory: worker
         env:
