@@ -2,13 +2,11 @@ const { onCall, HttpsError } = require('firebase-functions/v2/https');
 const { initializeApp } = require('firebase-admin/app');
 const { getAuth } = require('firebase-admin/auth');
 const { getFirestore, FieldValue } = require('firebase-admin/firestore');
-const { getStorage } = require('firebase-admin/storage');
-const { randomUUID } = require('crypto');
 
-initializeApp({ storageBucket: 'islamic-university-27d8f.firebasestorage.app' });
+initializeApp();
 const db = getFirestore();
 const auth = getAuth();
-const bucket = getStorage().bucket();
+const MEDIA_WORKER_URL = 'https://islamic-university-storage.saeed764saeed.workers.dev';
 
 const VALID_ROLES = ['superadmin', 'admin', 'sectionAdmin', 'uploader', 'user'];
 
@@ -218,6 +216,7 @@ exports.reviewPendingLesson = onCall(async (request) => {
   if (mediaSnaps.some(row => !row.exists
     || row.data().ownerUid !== pending.ownerUid
     || row.data().status !== 'pending'
+    || row.data().storageProvider !== 'cloudflare-r2'
     || typeof row.data().storagePath !== 'string'
     || !row.data().storagePath.startsWith(`pending/${pending.ownerUid}/`))) {
     throw new HttpsError('failed-precondition', 'د درس له فایلونو څخه یو یا څو فایلونه نیمګړي دي یا د تایید په تمه نه دي.');
@@ -229,11 +228,15 @@ exports.reviewPendingLesson = onCall(async (request) => {
     const approvedUrls = {};
     for (let i = 0; i < mediaRefs.length; i++) {
       const media = mediaSnaps[i].data();
-      const token = randomUUID();
-      const file = bucket.file(media.storagePath);
-      await file.setMetadata({ metadata: { firebaseStorageDownloadTokens: token } });
-      approvedUrls[media.mediaId || mediaRefs[i].id] = `https://firebasestorage.googleapis.com/v0/b/${bucket.name}/o/${encodeURIComponent(media.storagePath)}?alt=media&token=${token}`;
-      batch.update(mediaRefs[i], { status: 'approved', downloadToken: token, reviewedBy: actor.uid, reviewedAt });
+      const mediaId = media.mediaId || mediaRefs[i].id;
+      approvedUrls[mediaId] = `${MEDIA_WORKER_URL}/media/${encodeURIComponent(mediaId)}`;
+      batch.update(mediaRefs[i], {
+        status: 'approved',
+        downloadUrl: approvedUrls[mediaId],
+        storageProvider: 'cloudflare-r2',
+        reviewedBy: actor.uid,
+        reviewedAt
+      });
     }
     const publishedItem = JSON.parse(JSON.stringify(pending.item || {}));
     const replaceMediaUri = file => {
@@ -271,13 +274,7 @@ exports.reviewPendingLesson = onCall(async (request) => {
   }
   await batch.commit();
 
-  if (decision === 'reject') {
-    for (const row of mediaSnaps) {
-      const path = row.data().storagePath;
-      if (path) await bucket.file(path).delete({ ignoreNotFound: true }).catch(() => {});
-    }
-  }
   await writeAudit(actor.uid, decision === 'approve' ? 'lesson_published' : 'lesson_rejected', lessonId, { section: pending.section, folder: pending.folder, previousStatus: currentStatus });
-  return { success: true, status: decision === 'approve' ? 'approved' : 'rejected' };
+  return { success: true, status: decision === 'approve' ? 'approved' : 'rejected', cleanupMediaIds: decision === 'reject' ? mediaIds : [] };
 });
 
