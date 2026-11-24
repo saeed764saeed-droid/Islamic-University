@@ -869,26 +869,16 @@ export default function App() {
   async function loadPendingLessons() {
     if (!auth.currentUser || !isReviewer) return;
     try {
-      const base = collection(db, 'pendingLessons');
-      let queries = [];
-      if (!['superadmin','admin'].includes(firebaseRole)) {
-        const sections = Array.isArray(firebaseRoleData?.sectionKeys) ? firebaseRoleData.sectionKeys.slice(0, 10) : [];
-        if (!sections.length) { setPendingLessons([]); return; }
-        queries = [query(base, where('section', 'in', sections))];
-      } else {
-        queries = [
-          query(base, where('status', '==', 'pending')),
-          query(base, where('status', '==', 'admin_review'))
-        ];
-      }
-      const snapshots = await Promise.all(queries.map(q => getDocs(q)));
-      const rows = snapshots.flatMap(snapshot => snapshot.docs.map(row => ({ id: row.id, ...row.data() })))
-        .filter(row => ['pending', 'admin_review'].includes(row.status)
-          && (['superadmin','admin'].includes(firebaseRole) || row.status === 'pending'));
+      const fn = httpsCallable(getFunctions(auth.app), 'listPendingLessons');
+      const result = await fn({});
+      const rows = Array.isArray(result.data?.lessons) ? result.data.lessons : [];
       setPendingLessons(rows);
+      setFirebaseStatus(`د انتظار درسونو لېست تازه شو؛ ${rows.length} درسونه وموندل شول.`);
     } catch (error) {
-      console.error('Pending lesson load error:', error);
-      setFirebaseStatus('د انتظار درسونو لېست ونه لوستل شو؛ د Firebase قواعد او د برخو اجازې وګورئ.');
+      console.error('Pending lesson callable error:', error);
+      const code = error?.code ? String(error.code) : 'unknown';
+      const message = error?.message || 'ناپېژندل شوې ستونزه';
+      setFirebaseStatus(`د انتظار درسونو لېست ونه لوستل شو (${code}): ${message}`);
     }
   }
 
@@ -1031,9 +1021,8 @@ export default function App() {
       });
       const uploadResult = await uploadResponse.json().catch(() => ({}));
       if (!uploadResponse.ok || uploadResult.success !== true) {
-        const serverMessage = [uploadResult.error, uploadResult.detail, uploadResult.errorName ? `(${uploadResult.errorName})` : '']
-          .filter(Boolean).join(' — ');
-        throw new Error(serverMessage || `Cloudflare R2 اپلوډ ناکام شو (${uploadResponse.status}).`);
+        const detail = uploadResult.detail ? ` — ${uploadResult.detail}` : '';
+        throw new Error(`${uploadResult.error || 'Cloudflare R2 اپلوډ ناکام شو'} (${uploadResponse.status})${detail}`);
       }
       try { blob.close?.(); } catch (error) {}
       return { ...file, storagePath, mediaId, reviewStatus: 'pending', storageProvider: 'cloudflare-r2' };
