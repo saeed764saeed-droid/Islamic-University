@@ -1,11 +1,10 @@
-name: Deploy Firebase Backend
+name: Deploy Firestore Rules Only
 
 on:
   workflow_dispatch:
   push:
     branches: [main]
     paths:
-      - "functions/**"
       - "firestore.rules"
       - "firebase.json"
       - ".github/workflows/deploy-firebase.yml"
@@ -16,34 +15,13 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 22
-
-      - name: Verify Firebase token
-        env:
-          FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
-        run: |
-          if [ -z "$FIREBASE_TOKEN" ]; then
-            echo "FIREBASE_TOKEN secret is missing"
-            exit 1
-          fi
-          echo "Firebase token is available"
-
       - name: Install Firebase CLI
         run: npm install --global firebase-tools
-
-      - name: Install Functions dependencies
-        working-directory: functions
-        run: npm ci --omit=dev
-
-      - name: Deploy Firebase Functions and Firestore rules
+      - name: Deploy Firestore security rules (no Functions, no Storage)
         env:
           FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
-        run: |
-          firebase deploy --only functions,firestore:rules \
-            --project islamic-university-27d8f \
-            --non-interactive \
-            --token "$FIREBASE_TOKEN"
+        run: firebase deploy --only firestore:rules --project islamic-university-27d8f --non-interactive --token "$FIREBASE_TOKEN"
