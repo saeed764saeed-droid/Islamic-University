@@ -45,7 +45,7 @@ service cloud.firestore {
     match /userRoles/{uid} {
       allow get: if signedIn() && (request.auth.uid == uid || isSuperAdmin());
       allow list: if isSuperAdmin();
-      // رولونه یوازې Cloud Functions/Admin SDK ټاکي؛ اپلېکېشن یې مستقیم نه شي بدلولی.
+      // رولونه یوازې د خوندي Cloudflare Worker له لارې د Service Account په واک ټاکل کېږي؛ اپلېکېشن یې مستقیم نه شي بدلولی.
       allow create, update, delete: if false;
     }
 
@@ -82,7 +82,7 @@ service cloud.firestore {
         && request.resource.data.folder is string
         && (canUploadTo(request.resource.data.section, request.resource.data.folder) || canEditIn(request.resource.data.section, request.resource.data.folder))
         && (isSuperAdmin() || (hasPermission('upload') && hasPermission('createContent')) || hasPermission('editContent'));
-      // ټول بدلونونه د خوندي Cloud Function له لارې کېږي.
+      // ټول بدلونونه د خوندي Cloudflare Worker له لارې کېږي.
       allow update, delete: if false;
     }
 

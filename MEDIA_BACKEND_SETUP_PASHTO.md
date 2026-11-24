@@ -10,48 +10,18 @@
 - **uploader**: یوازې هغه فولډرونو ته نوي درسونه سپاري چې اجازه ورته ورکړل شوې وي. خپل درس نه شي تاییدولی او موجود درس/عمومي فولډرونه نه شي بدلولی.
 - **user**: خپاره شوي درسونه اوري/لولي او د آفلاین لپاره یې ډاونلوډوي.
 
-د رول اسناد په `userRoles/{uid}` کې ساتل کېږي. د اپلیکیشن له لارې یې مستقیم بدلون بند دی؛ یوازې Cloud Functions/Admin SDK یې بدلولی شي.
+د رول اسناد په `userRoles/{uid}` کې ساتل کېږي. د اپلیکیشن له لارې یې مستقیم بدلون بند دی؛ یوازې خوندي Cloudflare Worker یې بدلولی شي.
 
-## یو ځل د Firebase چمتو کول
+## د Cloudflare Worker او Firebase چمتو کول
 
-1. په Firebase Console کې د همدې پروژې `islamic-university-27d8f` برخه خلاصه کړئ.
-2. Authentication کې Email/Password فعال کړئ او د لومړي لوی مدیر لپاره یو حساب جوړ کړئ. د هر اپلوډر لپاره هم لومړی په Authentication کې حساب جوړ کړئ؛ وروسته یې لوی مدیر د ایمیل له لارې رول ټاکي. عادي لوستونکي حساب ته اړتیا نه لري.
-3. د Cloud Storage برخه فعاله کړئ. د Cloud Storage کارولو لپاره د Firebase پروژې د بلینګ/Blaze تنظیم ته اړتیا کېدای شي؛ د لګښت خبرتیاوې (Budget alerts) حتماً فعاله کړئ.
-4. د خپل کمپیوټر ترمینل کې د دې پروژې ریښه خلاصه کړئ او Firebase CLI نصب/ننوتل وکړئ:
+1. په Firebase کې Authentication Email/Password فعال وساتئ او د موجودو ستر اډمینانو حسابونه مه بدلوئ.
+2. Firestore د `islamic-university-27d8f` په پروژه کې وساتئ. Firebase Storage مه فعالوئ.
+3. د Cloudflare Worker Production Secret `FIREBASE_SERVICE_ACCOUNT` باید د همدې پروژې Service Account JSON وي.
+4. په Google Cloud IAM کې Service Account ته `roles/datastore.user` او `roles/firebaseauth.viewer` ورکړئ.
+5. د R2 موجود `MY_BUCKET` binding او `islamic-university-files` bucket وساتئ.
+6. د Worker او Firestore Rules د نشر لپاره `README-DEPLOY-PASHTO.md` تعقیب کړئ.
 
-```bash
-npm install -g firebase-tools
-firebase login
-firebase use islamic-university-27d8f
-```
-
-5. قواعد پورته کړئ:
-
-```bash
-firebase deploy --only firestore:rules,storage
-```
-
-6. Cloud Functions نصب او خپرې کړئ:
-
-```bash
-cd functions
-npm install
-cd ..
-firebase deploy --only functions
-```
-
-## د لومړي لوی مدیر خوندي ټاکل
-
-د لومړي لوی مدیر UID د Firebase Console → Authentication → Users څخه واخلئ. د Admin SDK د Service Account فایل په خپل کمپیوټر کې خوندي کړئ؛ **هیڅکله یې GitHub ته مه پورته کوئ**.
-
-```bash
-cd functions
-cd functions
-npm install
-GOOGLE_APPLICATION_CREDENTIALS="/secure/path/service-account.json" node scripts/bootstrap_superadmins.js FIREBASE_AUTH_UID
-```
-
-دا bootstrap یوازې یو ځل کار کوي. له دې وروسته هر لوی مدیر د اپلیکیشن د تنظیماتو له لارې نور مدیران او اپلوډران ټاکلی شي. د Service Account فایل د پروژې له فولډر څخه بهر وساتئ.
+د Firebase Functions پخوانی فولډر د سرچینې د ساتنې لپاره په ZIP کې پاتې دی، خو `firebase.json` او GitHub workflow یې نه Deploy کوي.
 
 ## د اپلیکیشن دننه د کارولو طریقه
 
@@ -99,4 +69,4 @@ GOOGLE_APPLICATION_CREDENTIALS="/secure/path/service-account.json" node scripts/
 - د هر فایل حد 100 MB دی او په یوه درس کې تر 50 پورې نوي فایلونه منل کېږي. د موبایل حافظه او د انټرنېټ کیفیت ته په کتو، د ډېر لویو آډیو فایلونو لپاره فایلونه کوچني/برخې کړئ.
 - اپلوډر یوازې نوی درس یا کتاب سپاري؛ د خپرو شویو موادو سمون، د فولډرونو جوړول او عمومي ډیزاین د لوی مدیر صلاحیت دی.
 - د پخواني تایید شوي آډیو فایل بیا کارول د نوي تایید په رد کې نه حذف کېږي. نوي فایلونه د خپل جلا Pending ثبت له لارې بیاکتل کېږي.
-- د Firebase د Rules او Functions خپرولو مخکې په اصلي کاروونکو باندې ازموینه مه کوئ؛ لومړی د ازمایښتي حسابونو او کوچنیو فایلونو په وسیله د هر رول اجازه وازمویئ.
+- د Firestore Rules او Cloudflare Worker د خپرولو مخکې په اصلي کاروونکو باندې ازموینه مه کوئ؛ لومړی د ازمایښتي حسابونو او کوچنیو فایلونو په وسیله د هر رول اجازه وازمویئ.

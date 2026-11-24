@@ -62,3 +62,15 @@
 - د موجود Super Admin د بیا Bootstrap کولو اړتیا نشته؛ د setup لارښود کې د Bootstrap د بیا اجرا منع لیکل شوې.
 - `node --check App.js`، `node --check functions/index.js` او د JSON فایلونو parsing بریالي شول.
 - د Firebase Rules د Emulator/Production د عملي ازموینې، Firebase Deploy، د Android build او د موبایل د حقیقي اپلوډ ازموینه لا نه ده ترسره شوې.
+
+## د Cloudflare Worker Admin انتقال – 2026-11-24
+
+- د App.js پنځه Callable Functions غوښتنې د Cloudflare Worker `/admin/*` لارو ته واړول شوې.
+- Worker کې د Firebase Service Account JWT/OAuth، Firestore REST او Identity Toolkit `projects:queryAccounts` اتصال ورزیات شو.
+- د Identity Toolkit د `userInfo` ځواب بڼه د Google رسمي REST API له مستنداتو سره برابره شوه.
+- CORS کې POST اجازه ورزیاته شوه.
+- `firebase.json` اوس یوازې Firestore Rules لري؛ GitHub Firebase workflow نور Functions یا Storage نه Deploy کوي.
+- موجود R2 binding `MY_BUCKET` او bucket نوم نه دي بدل شوي.
+- د Worker `node --check` بریالی شو؛ د App.js JSX/JavaScript parsing د TypeScript transpile parser له لارې صفر diagnostics ورکړل.
+- د JSON config فایلونه parse شول.
+- **لا نه دي اجرا شوي:** د Cloudflare حقیقي deploy، د Google IAM role ازموینه، د Worker secret حقیقي OAuth token exchange، د Firestore عملیاتو end-to-end ازموینه، Android EAS Build او د موبایل حقیقي upload/approve/reject ازموینه. د دې لپاره د کارن Cloudflare/Firebase/GitHub/EAS حسابونو ته لاسرسی اړین دی.

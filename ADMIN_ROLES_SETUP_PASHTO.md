@@ -28,19 +28,7 @@
 
 ## د Deploy لارښوونې
 
-په پروژه کې:
-
-```bash
-npm install
-cd functions
-npm install
-cd ..
-firebase login
-firebase use islamic-university-27d8f
-firebase deploy --only firestore:rules,storage,functions
-```
-
-دا Deploy د Firestore Rules، Storage Rules او Cloud Functions تازه کوي. **Bootstrap مه چلوئ**؛ ځکه لومړی Super Admin مخکې فعال شوی دی.
+د Deploy لپاره د `README-DEPLOY-PASHTO.md` لارښود تعقیب کړئ. دا نسخه اداري عملیات Cloudflare Worker ته لېږدوي؛ یوازې Firestore Rules Deploy کېږي. Firebase Functions او Firebase Storage مه Deploy کوئ. **Bootstrap مه چلوئ**؛ ځکه دواړه Super Admin حسابونه مخکې ثبت دي.
 
 ## د Super Admin د اپلوډ د خطا تشخیص
 

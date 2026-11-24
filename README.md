@@ -1,39 +1,33 @@
 # میراث اسلام – آنلاین او افلاین علمي کتابتون
 
-دا د موجود React Native / Expo اپ بشپړه پروژه ده. د پخواني کتابتون، AsyncStorage کلیدونه، د لمانځه وختونه، اذکار، نوټونه، نښې، د قرآن او حدیثو جوړښت، PDF/آډیو پلیر او د کورپاڼې تنظیمات ساتل شوي دي.
+دا د React Native / Expo اپ بشپړه پروژه ده. د پخواني کتابتون، AsyncStorage کلیدونه، د لمانځه وختونه، اذکار، نوټونه، نښې، قرآن او حدیث جوړښت، PDF/آډیو پلیر او د کورپاڼې تنظیمات ساتل شوي دي.
 
-## د دې نسخې نوې اسانتیاوې
+## د آنلاین سیستم جوړښت
+- Firebase Authentication د ننوتلو او د کارن د پېژندنې لپاره.
+- Firestore د رولونو، درسونو، رسنیو او audit معلوماتو لپاره.
+- Cloudflare Worker د اداري عملیاتو، د فایلونو اپلوډ، تایید، رد او خپرولو لپاره.
+- Cloudflare R2 د MP3، PDF او نورو فایلونو لپاره.
+- Firebase Functions او Firebase Storage د دې نسخې د deploy برخه نه دي؛ د Firebase Blaze پلان ته د Functions لپاره اړتیا نشته.
 
-- د Firebase Authentication له لارې د مدیر او اپلوډر ننوتل.
-- پنځه رولونه: `superadmin`، `admin`، `sectionAdmin`، `uploader` او `user`.
-- اپلوډر یوازې هغو فولډرونو ته نوی MP3/PDF درس سپاري چې لوی مدیر ورته ټاکلي وي.
-- د فایلونو اصلي بڼه په Firebase Cloud Storage کې د جلا `pending` مسیر لاندې پورته کېږي.
-- د اپلوډر درس تر تایید مخکې عامو کاروونکو ته نه ښکاري.
-- عمومي Admin د درس وروستی تایید/رد او خپرول کوي؛ Section Admin لومړنۍ کتنه کوي او درس عمومي Admin ته لېږي. د رولونو ټاکل یوازې د خوندي Cloud Functions له لارې کېږي.
-- تایید شوي درسونه د برخې/فولډر له مخې همغږي کېږي او آنلاین اورېدل/لوستل کېږي.
-- MP3 او PDF په موبایل کې ډاونلوډ او افلاین کارول کېدای شي.
-- د موجودو تایید شوو فایلونو د بیا کارولو پر مهال د رد کولو له امله پخواني فایلونه نه حذف کېږي.
+## اداري رولونه
+پنځه رولونه شته: `superadmin`، `admin`، `sectionAdmin`، `uploader` او `user`. د دواړو موجودو Super Admin حسابونو `userRoles/{uid}` سندونه ساتل کېږي. د وروستي فعال Super Admin د بندېدو/لرې کېدو مخنیوی د Worker په سرور-اړخ کوډ کې شته.
 
-## مهم: تر نصب مخکې
+## تر Deploy مخکې
+1. د Cloudflare Worker نوم `islamic-university-storage`، R2 binding `MY_BUCKET` او bucket `islamic-university-files` مه بدلوئ.
+2. په Worker Production Secrets کې `FIREBASE_SERVICE_ACCOUNT` باید د همدې Firebase پروژې د Service Account بشپړ JSON ولري.
+3. په Google Cloud IAM کې دې Service Account ته `Cloud Datastore User` (`roles/datastore.user`) او `Firebase Authentication Viewer` (`roles/firebaseauth.viewer`) ورکړئ.
+4. د GitHub Actions Secrets کې `CLOUDFLARE_API_TOKEN`، `FIREBASE_TOKEN` او د APK لپاره `EXPO_TOKEN` موجود وي.
+5. د `CLOUDFLARE_WORKER_ADMIN_SETUP_PASHTO.md` او `README-DEPLOY-PASHTO.md` لارښودونه تعقیب کړئ.
 
-دا پروژه د Firebase Rules او Cloud Functions د خپرولو او د لومړي لوی مدیر د خوندي ټاکلو اړتیا لري. یوازې ZIP نصب کول آنلاین اپلوډ نه فعالوي. د لومړي لوی مدیر UID باید د خپل Firebase Authentication حساب له Users برخې واخیستل شي؛ په کوډ کې هېڅ ایمیل، UID یا پاسورډ اټکل شوی نه دی.
-
-د پنځو رولونو وروستۍ طرحه او د کارولو طریقه په `ADMIN_ROLES_SETUP_PASHTO.md` کې ده؛ د Firebase تخنیکي ترتیب لپاره `MEDIA_BACKEND_SETUP_PASHTO.md` هم ولولئ. د Service Account شخصي فایل هېڅکله ZIP، GitHub یا اپلیکیشن ته مه پورته کوئ.
+**د Service Account JSON، خصوصي کیلي، پاسورډ او Token هېڅکله GitHub، App.js یا عام چټ ته مه پورته کوئ.**
 
 ## Android جوړول
-
 ```bash
-npm install
+npm ci
 npx expo-doctor
 eas build --platform android --profile preview
 ```
-
-د EAS لپاره خپل Expo حساب ته ننوتل او د پروژې معتبر `EXPO_TOKEN`/credentials اړین دي. دا ZIP APK نه دی؛ د EAS build وروسته APK جلا ترلاسه کېږي.
-
-## د ظرفیت او لګښت یادښت
-
-دا جوړښت د Firestore metadata، Cloud Storage object files او د فولډر پر بنسټ sync کاروي؛ ټول فایلونه په Firestore کې نه ساتي. خو د یو میلیون میاشتنیو کاروونکو لپاره ظرفیت او لګښت یوازې د کاروونکو په شمېر نه اټکل کېږي: د آډیو ساعتونه، فایلونه، د ډاونلوډ شمېر، جغرافیه او CDN cache مهم دي. د عامه پراخ خپرېدو مخکې باید Cloud Billing budget alerts، usage monitoring، rate limits، CDN/edge cache او load testing تنظیم شي. په دې ZIP کې CDN په اتومات ډول نه دی فعال شوی.
+APK یوازې د EAS Build له بریالي بشپړېدو وروسته ترلاسه کېږي. د Backend د Deploy او ازموینې تر بشپړېدو مخکې Build مه کوئ.
 
 ## د ازموینې حالت
-
-د JavaScript/JSX نحوي کتنه او د Cloud Functions د فایلونو Node syntax check باید د build تر مخه بیا اجرا شي. د Firebase Rules/Functions واقعي deploy، د Storage upload، د آنلاین playback، د افلاین ډاونلوډ او د Android native PDF/آډیو عملي ازموینه د اړوند Firebase او Expo حسابونو ته اړتیا لري؛ تر هغې دا نسخه د تولید لپاره بشپړه تایید شوې نه ګڼل کېږي.
+د Worker JavaScript syntax او د App.js JSX parsing کتنه شوې؛ خو د Cloudflare حقیقي Deploy، د Google IAM اجازې، د Firebase/Worker end-to-end عملیات او د Android APK Build لا په دې چاپېریال کې نه دي اجرا شوي. نو دا ZIP د Deploy او حقیقي ازموینې لپاره چمتو شوی، خو لا د تولید لپاره تایید شوی release نه دی.

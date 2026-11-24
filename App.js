@@ -24,7 +24,6 @@ import { auth, db } from './firebaseClient';
 import { onAuthStateChanged, signInWithEmailAndPassword, signOut } from 'firebase/auth';
 import { collection, doc, getDoc, getDocs, onSnapshot, query, where, orderBy, limit, setDoc, deleteDoc, serverTimestamp } from 'firebase/firestore';
 
-import { getFunctions, httpsCallable } from 'firebase/functions';
 import * as DocumentPicker from 'expo-document-picker';
 import * as Sharing from 'expo-sharing';
 import * as Notifications from 'expo-notifications';
@@ -866,12 +865,24 @@ export default function App() {
     if (firebaseUser && isReviewer) loadPendingLessons();
   }, [firebaseUser, firebaseRole, firebaseRoleData]);
 
+  async function workerAdminCall(action, data = {}) {
+    if (!auth.currentUser) throw new Error('لومړی خپل حساب ته ننوځئ.');
+    const token = await auth.currentUser.getIdToken();
+    const response = await fetch(`${MEDIA_WORKER_URL}/admin/${encodeURIComponent(action)}`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.error || `د سرور غوښتنه ناکامه شوه (${response.status})`);
+    return result;
+  }
+
   async function loadPendingLessons() {
     if (!auth.currentUser || !isReviewer) return;
     try {
-      const fn = httpsCallable(getFunctions(auth.app), 'listPendingLessons');
-      const result = await fn({});
-      const rows = Array.isArray(result.data?.lessons) ? result.data.lessons : [];
+      const result = await workerAdminCall('listPendingLessons');
+      const rows = Array.isArray(result.lessons) ? result.lessons : [];
       setPendingLessons(rows);
       setFirebaseStatus(`د انتظار درسونو لېست تازه شو؛ ${rows.length} درسونه وموندل شول.`);
     } catch (error) {
@@ -887,9 +898,8 @@ export default function App() {
     if (!auth.currentUser || firebaseRole !== 'superadmin') return;
     try {
       setFirebaseBusy(true);
-      const fn = httpsCallable(getFunctions(auth.app), 'listUserRoles');
-      const result = await fn({});
-      setManagedUsers(Array.isArray(result.data?.users) ? result.data.users : []);
+      const result = await workerAdminCall('listUserRoles');
+      setManagedUsers(Array.isArray(result.users) ? result.users : []);
     } catch (error) {
       console.error('Managed users load error:', error);
       Alert.alert('د حسابونو ستونزه', error?.message || 'د کارنانو لېست ونه لوستل شو.');
@@ -900,8 +910,7 @@ export default function App() {
     if (firebaseRole !== 'superadmin') return;
     try {
       setFirebaseBusy(true);
-      const fn = httpsCallable(getFunctions(auth.app), 'setUserRoleStatus');
-      await fn({ uid: user.uid, active });
+      await workerAdminCall('setUserRoleStatus', { uid: user.uid, active });
       await loadManagedUsers();
       Alert.alert('بشپړ شو', active ? 'حساب فعال شو.' : 'حساب بند شو.');
     } catch (error) {
@@ -939,8 +948,7 @@ export default function App() {
     const sectionKeys = ['superadmin','admin'].includes(newRoleType) ? [] : String(newRoleSections || '').split(/[\n,،]+/).map(value => value.trim()).filter(Boolean);
     try {
       setFirebaseBusy(true);
-      const fn = httpsCallable(getFunctions(auth.app), 'setUserRoleByEmail');
-      await fn({ email, role: newRoleType, folderKeys, sectionKeys, permissions: newRolePermissions });
+      await workerAdminCall('setUserRoleByEmail', { email, role: newRoleType, folderKeys, sectionKeys, permissions: newRolePermissions });
       setNewRoleEmail(''); setNewRoleFolders(''); setNewRoleSections(''); setNewRolePermissions({});
       Alert.alert('بریالی شو', 'د کارن رول او ټاکل شوې اجازې ثبت شوې.');
     } catch (error) {
@@ -955,11 +963,10 @@ export default function App() {
     if (['approve','reject'].includes(decision) && !hasPermission('publish')) return;
     try {
       setFirebaseBusy(true);
-      const fn = httpsCallable(getFunctions(auth.app), 'reviewPendingLesson');
-      const reviewResult = await fn({ lessonId, decision });
-      if (decision === 'reject' && Array.isArray(reviewResult.data?.cleanupMediaIds)) {
+      const reviewResult = await workerAdminCall('reviewPendingLesson', { lessonId, decision });
+      if (decision === 'reject' && Array.isArray(reviewResult.cleanupMediaIds)) {
         const token = await auth.currentUser.getIdToken();
-        for (const mediaId of reviewResult.data.cleanupMediaIds) {
+        for (const mediaId of reviewResult.cleanupMediaIds) {
           try { await fetch(`${MEDIA_WORKER_URL}/media/${encodeURIComponent(mediaId)}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } }); }
           catch (cleanupError) { console.warn('R2 rejected media cleanup pending:', mediaId, cleanupError); }
         }
