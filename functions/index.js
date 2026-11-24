@@ -46,6 +46,43 @@ async function writeAudit(actorUid, action, target, details = {}) {
 }
 
 
+exports.listPendingLessons = onCall(async (request) => {
+  const actor = await getActor(request);
+  if (!actorHasPermission(actor, 'review')) {
+    throw new HttpsError('permission-denied', 'د درسونو د کتنې اجازه نشته.');
+  }
+
+  const isGlobalReviewer = ['superadmin', 'admin'].includes(actor.data.role);
+  const sectionKeys = Array.isArray(actor.data.sectionKeys) ? actor.data.sectionKeys : [];
+  if (!isGlobalReviewer && sectionKeys.length === 0) return { lessons: [] };
+
+  // Admin SDK query: Firestore client rules/index constraints do not block authorized reviewers.
+  const snapshot = await db.collection('pendingLessons').limit(500).get();
+  const lessons = snapshot.docs.map((row) => {
+    const data = row.data();
+    const updatedAt = data.updatedAt && typeof data.updatedAt.toDate === 'function'
+      ? data.updatedAt.toDate().toISOString() : null;
+    return {
+      id: row.id,
+      item: data.item || {},
+      ownerUid: data.ownerUid || '',
+      section: data.section || '',
+      folder: data.folder || '',
+      scopeKey: data.scopeKey || '',
+      status: data.status || '',
+      mediaIds: Array.isArray(data.mediaIds) ? data.mediaIds : [],
+      updatedAt
+    };
+  }).filter((row) => {
+    if (!['pending', 'admin_review'].includes(row.status)) return false;
+    if (isGlobalReviewer) return true;
+    return row.status === 'pending' && sectionKeys.includes(row.section);
+  });
+
+  lessons.sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
+  return { lessons };
+});
+
 exports.listUserRoles = onCall(async (request) => {
   const actor = await getActor(request);
   if (actor.data.role !== 'superadmin') {
