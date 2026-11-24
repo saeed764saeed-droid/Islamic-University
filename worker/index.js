@@ -97,12 +97,40 @@ async function uploadMedia(request, env, id) {
     }
   }));
   try {
+    // Return a clear configuration error instead of a generic R2 exception.
+    if (!env.MY_BUCKET || typeof env.MY_BUCKET.put !== 'function') {
+      console.error('R2 binding missing or invalid', { mediaId: id, hasBinding: !!env.MY_BUCKET });
+      return json({
+        error: 'R2 binding MY_BUCKET is missing or invalid',
+        detail: 'په Cloudflare Worker کې د MY_BUCKET R2 binding نشته یا سم نه دی تړل شوی.'
+      }, 500);
+    }
+
     await env.MY_BUCKET.put(path, limitedBody, {
       httpMetadata: { contentType: request.headers.get('Content-Type') || 'application/octet-stream', cacheControl: 'private, no-store' },
       customMetadata: { mediaId: id, ownerUid: a.user.sub, status: 'pending' }
     });
     return json({ success: true, mediaId: id, status: 'pending', size: actualSize });
-  } catch (e) { return json({ error: 'R2 upload failed', detail: String(e?.message || '').slice(0, 180) }, 500); }
+  } catch (e) {
+    const detail = String(e?.message || e || 'Unknown R2 error').slice(0, 500);
+    const errorName = String(e?.name || 'Error').slice(0, 80);
+    console.error('R2 upload failed', {
+      mediaId: id,
+      storagePath: path,
+      declaredSize: size,
+      streamedSize: actualSize,
+      errorName,
+      detail,
+      rayId: request.headers.get('cf-ray') || null
+    });
+    return json({
+      error: 'R2 upload failed',
+      detail,
+      errorName,
+      mediaId: id,
+      rayId: request.headers.get('cf-ray') || null
+    }, 500);
+  }
 }
 function parseRange(value, size) {
   const m = /^bytes=(\d*)-(\d*)$/.exec(value || ''); if (!m) return null;
