@@ -1030,7 +1030,11 @@ export default function App() {
         body: blob
       });
       const uploadResult = await uploadResponse.json().catch(() => ({}));
-      if (!uploadResponse.ok || uploadResult.success !== true) throw new Error(uploadResult.error || `Cloudflare R2 اپلوډ ناکام شو (${uploadResponse.status}).`);
+      if (!uploadResponse.ok || uploadResult.success !== true) {
+        const serverMessage = [uploadResult.error, uploadResult.detail, uploadResult.errorName ? `(${uploadResult.errorName})` : '']
+          .filter(Boolean).join(' — ');
+        throw new Error(serverMessage || `Cloudflare R2 اپلوډ ناکام شو (${uploadResponse.status}).`);
+      }
       try { blob.close?.(); } catch (error) {}
       return { ...file, storagePath, mediaId, reviewStatus: 'pending', storageProvider: 'cloudflare-r2' };
     } catch (error) {
