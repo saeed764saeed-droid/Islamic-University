@@ -85,51 +85,22 @@ async function uploadMedia(request, env, id) {
   if (!Number.isSafeInteger(size) || size <= 0) return json({ error: 'Valid file size is required' }, 411);
   if (size > MAX_FILE_SIZE) return json({ error: 'File exceeds 100 MB limit' }, 413);
   if (!request.body) return json({ error: 'Upload body is empty' }, 400);
-  let actualSize = 0;
-  const limitedBody = request.body.pipeThrough(new TransformStream({
-    transform(chunk, controller) {
-      actualSize += chunk.byteLength;
-      if (actualSize > MAX_FILE_SIZE || actualSize > size) throw new Error('Upload size exceeds declared limit');
-      controller.enqueue(chunk);
-    },
-    flush() {
-      if (actualSize !== size) throw new Error('Uploaded size does not match declared size');
-    }
-  }));
+  // Pass the original request stream directly to R2. Wrapping it in TransformStream
+  // can remove the stream's known-length metadata and cause R2.put() to fail.
+  // The client-declared size is validated above; the upload endpoint is capped at 100 MB.
   try {
-    // Return a clear configuration error instead of a generic R2 exception.
     if (!env.MY_BUCKET || typeof env.MY_BUCKET.put !== 'function') {
-      console.error('R2 binding missing or invalid', { mediaId: id, hasBinding: !!env.MY_BUCKET });
-      return json({
-        error: 'R2 binding MY_BUCKET is missing or invalid',
-        detail: 'په Cloudflare Worker کې د MY_BUCKET R2 binding نشته یا سم نه دی تړل شوی.'
-      }, 500);
+      throw new Error('R2 binding MY_BUCKET is missing from this Worker deployment');
     }
-
-    await env.MY_BUCKET.put(path, limitedBody, {
+    await env.MY_BUCKET.put(path, request.body, {
       httpMetadata: { contentType: request.headers.get('Content-Type') || 'application/octet-stream', cacheControl: 'private, no-store' },
-      customMetadata: { mediaId: id, ownerUid: a.user.sub, status: 'pending' }
+      customMetadata: { mediaId: id, ownerUid: a.user.sub, status: 'pending', declaredSize: String(size) }
     });
-    return json({ success: true, mediaId: id, status: 'pending', size: actualSize });
+    return json({ success: true, mediaId: id, status: 'pending', size });
   } catch (e) {
-    const detail = String(e?.message || e || 'Unknown R2 error').slice(0, 500);
-    const errorName = String(e?.name || 'Error').slice(0, 80);
-    console.error('R2 upload failed', {
-      mediaId: id,
-      storagePath: path,
-      declaredSize: size,
-      streamedSize: actualSize,
-      errorName,
-      detail,
-      rayId: request.headers.get('cf-ray') || null
-    });
-    return json({
-      error: 'R2 upload failed',
-      detail,
-      errorName,
-      mediaId: id,
-      rayId: request.headers.get('cf-ray') || null
-    }, 500);
+    const detail = String(e?.message || e || 'Unknown R2 error').slice(0, 300);
+    console.error('R2 upload failed', { mediaId: id, path, declaredSize: size, detail });
+    return json({ error: 'R2 upload failed', detail }, 500);
   }
 }
 function parseRange(value, size) {
