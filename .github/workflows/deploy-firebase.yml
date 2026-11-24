@@ -1,4 +1,3 @@
-
 name: Deploy Firebase Backend
 
 on:
@@ -8,14 +7,12 @@ on:
     paths:
       - "functions/**"
       - "firestore.rules"
-      - "storage.rules"
       - "firebase.json"
       - ".github/workflows/deploy-firebase.yml"
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -25,7 +22,7 @@ jobs:
         with:
           node-version: 22
 
-      - name: Check Firebase Token
+      - name: Verify Firebase token
         env:
           FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
         run: |
@@ -40,13 +37,13 @@ jobs:
 
       - name: Install Functions dependencies
         working-directory: functions
-        run: npm install --omit=dev
+        run: npm ci --omit=dev
 
-      - name: Deploy Firebase Functions and rules
+      - name: Deploy Firebase Functions and Firestore rules
         env:
           FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
         run: |
-          firebase deploy --only functions,firestore:rules,storage \
+          firebase deploy --only functions,firestore:rules \
             --project islamic-university-27d8f \
             --non-interactive \
             --token "$FIREBASE_TOKEN"
