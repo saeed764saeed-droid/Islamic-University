@@ -113,7 +113,16 @@ function parseRange(value, size) {
 }
 async function serveMedia(request, env, id) {
   if (!/^[A-Za-z0-9_-]{1,160}$/.test(id)) return json({ error: 'Invalid media id' }, 400);
-  const fields = await getFirestoreDocument(`mediaAssets/${encodeURIComponent(id)}`, null);
+  // عام اور بې له Gmail کاروونکي هم تایید شوي فایلونه لوستلی شي.
+  // د Worker Service Account یوازې د metadata لوستلو لپاره کاروو؛ د کارن login نه غواړو.
+  let fields;
+  try {
+    const serviceToken = await getServiceAccessToken(env);
+    fields = await getFirestoreDocument(`mediaAssets/${encodeURIComponent(id)}`, serviceToken);
+  } catch (error) {
+    console.error('Public media metadata lookup failed', { mediaId: id, message: String(error?.message || error).slice(0, 240) });
+    return json({ error: 'د فایل معلومات اوس نه شي لوستل کېدای؛ لږ وروسته بیا هڅه وکړئ.' }, 503);
+  }
   if (!fields) return json({ error: 'Media not found' }, 404);
   const status = firestoreValue(fields, 'status');
   const provider = firestoreValue(fields, 'storageProvider');
