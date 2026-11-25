@@ -874,7 +874,10 @@ export default function App() {
       body: JSON.stringify(data)
     });
     const result = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(result.error || `د سرور غوښتنه ناکامه شوه (${response.status})`);
+    if (!response.ok) {
+      const serverMessage = [result.error, result.detail].filter(Boolean).join(' — ');
+      throw new Error(`${serverMessage || `د سرور غوښتنه ناکامه شوه`} (${response.status})`);
+    }
     return result;
   }
 
