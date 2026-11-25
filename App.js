@@ -22,7 +22,7 @@ import {
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { auth, db } from './firebaseClient';
 import { onAuthStateChanged, signInWithEmailAndPassword, signOut } from 'firebase/auth';
-import { collection, doc, getDoc, getDocs, onSnapshot, query, where, orderBy, limit, setDoc, deleteDoc, serverTimestamp } from 'firebase/firestore';
+import { collection, doc, getDoc, getDocs, onSnapshot, query, where, orderBy, documentId, startAfter, limit, setDoc, deleteDoc, serverTimestamp } from 'firebase/firestore';
 
 import * as DocumentPicker from 'expo-document-picker';
 import * as Sharing from 'expo-sharing';
@@ -1169,6 +1169,57 @@ export default function App() {
       console.warn('Published folder sync skipped:', error?.message || error);
     }
   }
+
+  // عام کاروونکي ته د Firebase Authentication حساب ته اړتیا نشته:
+  // publishedLessons د Firestore Rules له مخې عامه لوستلو ته اجازه لري.
+  // د اپلیکیشن له پیل سره ټول خپاره شوي درسونه اخلو، څو په نوي موبایل کې
+  // تش محلي کتابتون د آنلاین کتابتون د نه شتون سبب نه شي.
+  async function syncAllPublishedLessons(force = false) {
+    try {
+      const lastSync = Number(await AsyncStorage.getItem('published_all_sync_v1') || 0);
+      if (!force && Date.now() - lastSync < 3 * 60 * 1000) return;
+      // د ټولو تایید شویو درسونو پاڼه په پاڼه لوستل؛ یوازې لومړني ۵۰۰ درسونه مه محدودوه.
+      const incoming = [];
+      let cursor = null;
+      while (true) {
+        const constraints = [
+          collection(db, 'publishedLessons'),
+          where('status', '==', 'approved'),
+          orderBy(documentId()),
+          limit(500)
+        ];
+        if (cursor) constraints.push(startAfter(cursor));
+        const snapshot = await getDocs(query(...constraints));
+        incoming.push(...snapshot.docs
+          .map(row => row.data()?.item)
+          .filter(item => item && item.id !== undefined && item.id !== null));
+        if (snapshot.docs.length < 500) break;
+        cursor = snapshot.docs[snapshot.docs.length - 1];
+      }
+      if (incoming.length) {
+        const localRaw = await AsyncStorage.getItem(STORAGE.global);
+        const localItems = localRaw ? JSON.parse(localRaw) : [];
+        const latest = Array.isArray(localItems) ? [...localItems] : [];
+        for (const item of incoming) {
+          const index = latest.findIndex(row => String(row.id) === String(item.id));
+          if (index >= 0) latest[index] = { ...latest[index], ...item };
+          else latest.unshift(item);
+        }
+        setGlobalItems(latest);
+        await AsyncStorage.setItem(STORAGE.global, JSON.stringify(latest));
+      }
+      await AsyncStorage.setItem('published_all_sync_v1', String(Date.now()));
+      console.log(`Public library sync completed: ${incoming.length} approved lessons`);
+    } catch (error) {
+      // د عام کاروونکي لپاره Auth نه غوښتل کېږي؛ که لوستل ناکام شول،
+      // خطا په log کې ساتو او پخوانی محلي کتابتون نه حذفوو.
+      console.warn('Public library sync failed:', error?.code || error?.message || error);
+    }
+  }
+
+  useEffect(() => {
+    if (!loading) syncAllPublishedLessons();
+  }, [loading]);
 
   useEffect(() => {
     if (!loading && ['sectionFolder', 'scholarSection', 'generalMaterials', 'quran', 'quranAcademicSurahs', 'quranAcademicAyahs', 'quranAcademicAyahDetails', 'arabicBookDetails'].includes(screen)) {
