@@ -234,7 +234,11 @@ async function commitWrites(env, writes) {
   if (!writes.length) return;
   await fsRequest(env, ':commit', { method: 'POST', body: JSON.stringify({ writes }) });
 }
-function fsDoc(collectionName, id, fields) { return { name: `${FIRESTORE_BASE}/${collectionName}/${encodeURIComponent(id)}`, fields: Object.fromEntries(Object.entries(fields).map(([k,v]) => [k,toFs(v)])) }; }
+function fsDoc(collectionName, id, fields) {
+  // Firestore Write.update.document.name must be a resource name, not an HTTP URL.
+  const resourceName = `projects/${PROJECT_ID}/databases/(default)/documents/${collectionName}/${encodeURIComponent(id)}`;
+  return { name: resourceName, fields: Object.fromEntries(Object.entries(fields).map(([k, v]) => [k, toFs(v)])) };
+}
 function updateWrite(collectionName, id, fields, transforms = []) {
   return { update: fsDoc(collectionName,id,fields), updateMask: { fieldPaths: Object.keys(fields) }, ...(transforms.length ? { updateTransforms: transforms } : {}) };
 }
