@@ -1,11 +1,13 @@
 // One-time secure bootstrap. Run from this folder with a trusted Admin SDK identity.
-// Usage: GOOGLE_APPLICATION_CREDENTIALS=/secure/path/service-account.json node scripts/bootstrap_superadmins.js FIREBASE_AUTH_UID
+// Legacy trusted-admin fallback only. The primary bootstrap is the owner-UID-restricted Cloudflare Worker endpoint.
+// Usage (only if explicitly needed): GOOGLE_APPLICATION_CREDENTIALS=/secure/path/service-account.json node scripts/bootstrap_superadmins.js CtaXP0WGrFfusIKSsMFYP4ZKb6P2
 const { initializeApp, applicationDefault } = require('firebase-admin/app');
 const { getFirestore, FieldValue } = require('firebase-admin/firestore');
 const { getAuth } = require('firebase-admin/auth');
 
+const OWNER_UID = 'CtaXP0WGrFfusIKSsMFYP4ZKb6P2';
 const uid = String(process.argv[2] || '').trim();
-if (!uid) throw new Error('Usage: node scripts/bootstrap_superadmins.js FIREBASE_AUTH_UID');
+if (!uid || uid !== OWNER_UID) throw new Error('Only the verified project owner UID is permitted for bootstrap.');
 initializeApp({ credential: applicationDefault() });
 const db = getFirestore();
 const auth = getAuth();
