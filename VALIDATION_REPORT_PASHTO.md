@@ -74,3 +74,13 @@
 - د Worker `node --check` بریالی شو؛ د App.js JSX/JavaScript parsing د TypeScript transpile parser له لارې صفر diagnostics ورکړل.
 - د JSON config فایلونه parse شول.
 - **لا نه دي اجرا شوي:** د Cloudflare حقیقي deploy، د Google IAM role ازموینه، د Worker secret حقیقي OAuth token exchange، د Firestore عملیاتو end-to-end ازموینه، Android EAS Build او د موبایل حقیقي upload/approve/reject ازموینه. د دې لپاره د کارن Cloudflare/Firebase/GitHub/EAS حسابونو ته لاسرسی اړین دی.
+
+
+## 2026-11-26 – د ZIP پر بنسټ اصلاحات
+- د مالک UID لپاره Worker endpoint او د اپ دننه د فعالولو تڼۍ اضافه شوې.
+- د GitHub workflow مسیر `.github/workflows/` ته سم شو.
+- Expo owner/projectId د پروژې د ثبت شوو معلوماتو سره برابر شول.
+- د `@expo/config-plugins` مستقیم dependency اضافه شو.
+- د ورک player artwork asset ته reference لرې شو، ځکه ZIP کې د `assets/` فولډر نه و.
+- د Worker، Functions او bootstrap سکریپټ JavaScript syntax کتنه او د App.js JSX parse کتنه ترسره کېږي.
+- Cloudflare/Firebase Deploy، د Worker Secret واقعي تایید، د Firebase role document لوستل، او Android APK build د حسابونو له اجازې پرته لا نه دي تایید شوي.
