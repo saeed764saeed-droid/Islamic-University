@@ -369,10 +369,76 @@ async function adminApi(request, env, action) {
   return json({error:'Unknown admin action'},404);
 }
 
+async function bootstrapFirstSuperAdmin(request, env) {
+  const authResult = await authenticate(request);
+  if (authResult.error) return authResult.error;
+
+  // دا UID د پروژې د مالک له خوا تایید شوی؛ یوازې همدې حساب ته د لومړي رول د جوړولو اجازه ده.
+  const OWNER_UID = 'CtaXP0WGrFfusIKSsMFYP4ZKb6P2';
+  if (authResult.user.sub !== OWNER_UID) {
+    return json({ error: 'دا حساب د لومړي ستر اډمین د جوړولو اجازه نه لري.' }, 403);
+  }
+
+  const existing = await adminGet(env, 'userRoles', OWNER_UID);
+  if (existing?.fields.role === 'superadmin' && activeRole(existing.fields)) {
+    return json({ success: true, alreadyConfigured: true, uid: OWNER_UID, role: 'superadmin', active: true });
+  }
+  if (existing?.fields.bootstrapCompleted === true) {
+    return json({ error: 'د لومړي ستر اډمین د یو ځل تنظیم نښه موجوده ده؛ لاسي امنیتي کتنه اړینه ده.' }, 409);
+  }
+
+  const email = typeof authResult.user.email === 'string'
+    ? authResult.user.email
+    : (existing?.fields.email || '');
+  const fields = {
+    uid: OWNER_UID,
+    email,
+    role: 'superadmin',
+    active: true,
+    folderKeys: [],
+    sectionKeys: [],
+    permissions: {},
+    bootstrapCompleted: true,
+    updatedBy: OWNER_UID
+  };
+
+  await commitWrites(env, [
+    {
+      update: fsDoc('userRoles', OWNER_UID, fields),
+      updateMask: { fieldPaths: Object.keys(fields) },
+      updateTransforms: [serverTimestampTransform('updatedAt')]
+    },
+    {
+      update: fsDoc('auditLogs', `log_${Date.now()}_${crypto.randomUUID().slice(0,8)}`, {
+        actorUid: OWNER_UID,
+        action: 'first_superadmin_bootstrap',
+        target: OWNER_UID,
+        details: { email, previousRole: existing?.fields.role || null }
+      }),
+      updateTransforms: [serverTimestampTransform('createdAt')]
+    }
+  ]);
+
+  return json({ success: true, uid: OWNER_UID, role: 'superadmin', active: true });
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url); const parts = url.pathname.split('/').filter(Boolean);
     if (request.method === 'OPTIONS') return cors();
+    if (url.pathname === '/bootstrap/superadmin' && request.method === 'POST') {
+      try {
+        return await bootstrapFirstSuperAdmin(request, env);
+      } catch (error) {
+        console.error('Super Admin bootstrap failed', {
+          message: String(error?.message || error).slice(0, 300)
+        });
+        return json({
+          error: 'د لومړي ستر اډمین د جوړولو عملیات ناکام شول.',
+          detail: String(error?.message || 'Unknown error').slice(0, 240)
+        }, 500);
+      }
+    }
     if (parts.length === 2 && parts[0] === 'admin' && request.method === 'POST') {
       try { return await adminApi(request, env, parts[1]); }
       catch (error) { console.error('Worker admin API failed', { action: parts[1], message: String(error?.message || error).slice(0, 300) }); return json({ error: 'د اداري سرور په عملیاتو کې ستونزه رامنځته شوه.', detail: String(error?.message || 'Unknown error').slice(0, 240) }, 500); }
