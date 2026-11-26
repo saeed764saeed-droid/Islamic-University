@@ -2,7 +2,7 @@
   "expo": {
     "name": "اسلامي علمي کتابتون",
     "slug": "mirath-islam",
-    "owner": "altast",
+    "owner": "meera99",
     "version": "1.0.0",
     "orientation": "portrait",
     "userInterfaceStyle": "dark",
@@ -18,7 +18,7 @@
     },
     "extra": {
       "eas": {
-        "projectId": "2c17a660-64ca-416c-80f1-ab0b5b5a88f4"
+        "projectId": "39639608-736f-406f-9327-3dd2d5479dec"
       }
     },
     "description": "اسلامي علمي کتابتون"

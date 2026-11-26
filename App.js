@@ -4,7 +4,6 @@ import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
-  Image,
   ScrollView,
   TouchableOpacity,
   TextInput,
@@ -21,6 +20,7 @@ import {
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { auth, db } from './firebaseClient';
+import FormalLearning from './FormalLearning';
 import { onAuthStateChanged, signInWithEmailAndPassword, signOut } from 'firebase/auth';
 import { collection, doc, getDoc, getDocs, onSnapshot, query, where, orderBy, documentId, startAfter, limit, setDoc, deleteDoc, serverTimestamp } from 'firebase/firestore';
 
@@ -1226,6 +1226,37 @@ export default function App() {
       syncPublishedLessonsForScope(selectedSection, selectedFolder);
     }
   }, [loading, screen, selectedSection, selectedFolder, selectedFolderParent]);
+
+  async function bootstrapMySuperAdminAccess() {
+    const OWNER_UID = 'CtaXP0WGrFfusIKSsMFYP4ZKb6P2';
+    if (!auth.currentUser || auth.currentUser.uid !== OWNER_UID) {
+      Alert.alert('اجازه نشته', 'دا تنظیم یوازې د پروژې د تایید شوي مالک حساب ترسره کولای شي.');
+      return;
+    }
+    try {
+      setFirebaseBusy(true);
+      const token = await auth.currentUser.getIdToken(true);
+      const response = await fetch(`${MEDIA_WORKER_URL}/bootstrap/superadmin`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({})
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok || result.success !== true) {
+        const detail = [result.error, result.detail].filter(Boolean).join(' — ');
+        throw new Error(detail || `د Super Admin تنظیم ناکام شو (${response.status})`);
+      }
+      setFirebaseStatus('د ستر اډمین واک په بریالیتوب ثبت شو؛ د حساب معلومات تازه کېږي.');
+      Alert.alert('بریالی شو', result.alreadyConfigured
+        ? 'دا حساب له مخکې ستر اډمین دی.'
+        : 'ستا حساب د ستر اډمین په توګه فعال شو. څو شېبې انتظار وکړه چې اجازه تازه شي.');
+    } catch (error) {
+      console.error('Super Admin bootstrap error:', error);
+      Alert.alert('د ستر اډمین ستونزه', error?.message || 'د ستر اډمین واک ثبت نه شو.');
+    } finally {
+      setFirebaseBusy(false);
+    }
+  }
 
   async function firebaseAdminLogin() {
     if (!firebaseEmail.trim() || !firebasePassword) {
@@ -3121,7 +3152,7 @@ export default function App() {
             title: item.title || 'میراث اسلام',
             artist: item.scholar || 'میراث اسلام',
             albumTitle: item.section || 'د علمي بیانونو کتابتون',
-            artworkUrl: item.audioCoverUri || settings.audioCoverImageUri || Image.resolveAssetSource(require('./assets/mirath-islam-player-artwork.jpg'))?.uri
+            artworkUrl: item.audioCoverUri || settings.audioCoverImageUri || undefined
           }, { showSeekBackward: true, showSeekForward: true });
         }
         const boundedEndAt = endAt != null && mapped.durationMillis > 0
@@ -8247,6 +8278,10 @@ export default function App() {
               {firebaseUser ? <>
                 <Text style={[styles.fileSelected, { marginTop: 8 }]}>اوسنی رول: {({ superadmin: 'ستر اډمین', admin: 'عمومي اډمین', sectionAdmin: 'د برخې اډمین', uploader: 'د موادو اپلوډر', user: 'عادي کارن' })[firebaseRole] || 'لا نه دی ټاکل شوی'}</Text>
                 <Text style={styles.smallMuted}>Firebase UID: {firebaseUser.uid} · فعال: {firebaseRoleData?.active === true ? 'هو' : 'نه'}</Text>
+                {firebaseUser.uid === 'CtaXP0WGrFfusIKSsMFYP4ZKb6P2' && firebaseRole !== 'superadmin' ? <>
+                  <Text style={[styles.smallMuted, { marginTop: 8 }]}>دا د پروژې د مالک تایید شوی حساب دی؛ د لومړي ځل لپاره د ستر اډمین واک دلته فعالولای شې.</Text>
+                  <GoldButton title={firebaseBusy ? 'اجازه ثبتېږي...' : '★ زما حساب د ستر اډمین په توګه فعال کړه'} onPress={bootstrapMySuperAdminAccess} />
+                </> : null}
                 {hasPermission('manageLibrary') ? <>
                   <GoldButton title={firebaseBusy ? 'مهرباني وکړئ انتظار...' : '⬆ عمومي کتابتون آنلاین ته پورته کول'} secondary onPress={uploadLibraryToFirebase} />
                   <GoldButton title={firebaseBusy ? 'مهرباني وکړئ انتظار...' : '⬇ له آنلاین کتابتون څخه بیا راوستل'} secondary onPress={restoreLibraryFromFirebase} />
@@ -8790,10 +8825,21 @@ export default function App() {
           </ScrollView>
         )}
 
+        {screen === 'formalLearning' && (
+          <FormalLearning
+            user={firebaseUser}
+            role={firebaseRole}
+            onBack={() => setScreen('learningPath')}
+            onSettings={() => setScreen('settings')}
+            onOpenLesson={item => openItem(item)}
+          />
+        )}
+
         {/* د زده کړې مسیر */}
         {screen === 'learningPath' && (
           <ScrollView contentContainerStyle={styles.pageContent} keyboardShouldPersistTaps="always" keyboardDismissMode="none">
             <PageHeader title="د زده کړې مسیر" subtitle="له بنسټیزې زده کړې تر تخصص پورې منظم پرمختګ" onBack={goBack} />
+            <GoldButton title="🎓 رسمي زده کړې، ازموینه او سند" onPress={() => setScreen('formalLearning')} />
             {LEARNING_LEVELS.map((level, index) => {
               const levelItems = globalItems.filter(item => canonicalLearningLevel(item.level) === level);
               return (

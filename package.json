@@ -7,7 +7,8 @@
     "start": "expo start",
     "android": "expo start --android",
     "ios": "expo start --ios",
-    "web": "expo start --web"
+    "web": "expo start --web",
+    "deploy:backend": "firebase deploy --only functions,firestore:rules --project islamic-university-27d8f"
   },
   "dependencies": {
     "expo": "~54.0.37",
@@ -34,7 +35,8 @@
     "adhan": "^4.4.6",
     "firebase": "^12.5.0",
     "expo-crypto": "~15.0.9",
-    "react-native-zip-archive": "^9.5.3"
+    "react-native-zip-archive": "^9.5.3",
+    "@expo/config-plugins": "54.0.6"
   },
   "private": true
 }

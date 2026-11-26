@@ -101,6 +101,29 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // رسمي کورسونه د ټولو لپاره لوستل کېدای شي؛ جوړول او خپرول یوازې Callable Functions کوي.
+    match /formalCourses/{courseId} {
+      allow read: if resource.data.published == true || hasPermission('manageLibrary');
+      allow write: if false;
+    }
+
+    // د زده کوونکي د ثبت او پرمختګ اسناد یوازې هماغه زده کوونکی لوستلی شي؛ بدلون د سرور له لارې کېږي.
+    match /courseEnrollments/{enrollmentId} {
+      allow read: if signedIn() && resource.data.uid == request.auth.uid;
+      allow write: if false;
+    }
+
+    // د ازموینې سم ځوابونه یوازې Cloud Functions لوستلی شي؛ د موبایل کاروونکي یې نه ویني.
+    match /formalCourseKeys/{courseId} {
+      allow read, write: if false;
+    }
+
+    // سند شخصي دی؛ زده کوونکی او د کتابتون مدیران یې لوستلی شي.
+    match /certificates/{certificateId} {
+      allow read: if (signedIn() && resource.data.uid == request.auth.uid) || hasPermission('manageLibrary');
+      allow write: if false;
+    }
+
     match /library_sync_v1/{document=**} {
       allow read, write: if hasPermission('manageLibrary');
     }

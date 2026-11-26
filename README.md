@@ -31,3 +31,8 @@ APK یوازې د EAS Build له بریالي بشپړېدو وروسته ترل
 
 ## د ازموینې حالت
 د Worker JavaScript syntax او د App.js JSX parsing کتنه شوې؛ خو د Cloudflare حقیقي Deploy، د Google IAM اجازې، د Firebase/Worker end-to-end عملیات او د Android APK Build لا په دې چاپېریال کې نه دي اجرا شوي. نو دا ZIP د Deploy او حقیقي ازموینې لپاره چمتو شوی، خو لا د تولید لپاره تایید شوی release نه دی.
+
+
+## First Super Admin bootstrap
+
+The verified owner UID is `CtaXP0WGrFfusIKSsMFYP4ZKb6P2`. After deploying `worker/index.js`, sign in to the app with that Firebase account and use the owner-only button in Settings. The Worker verifies the Firebase ID token and writes the `userRoles/{uid}` record using its Cloudflare secret. Never commit the Firebase service-account JSON.

@@ -1,8 +1,8 @@
 # د میراث اسلام – د Super Admin او اجازو اداره
 
-## مهم: لومړی Super Admin بیا Bootstrap مه کوئ
+## د مالک حساب د Super Admin فعالول
 
-که لومړی Super Admin مخکې په Firebase کې فعال شوی وي، د `functions/scripts/bootstrap_superadmins.js` سکریپټ بیا مه چلوئ. د دې نسخې لپاره د لومړي Super Admin موجود `userRoles/{Firebase Auth UID}` سند کارول کېږي.
+د پروژې د مالک تایید شوی Firebase UID `CtaXP0WGrFfusIKSsMFYP4ZKb6P2` دی. که اپ دا حساب عادي کارن وښيي، د Worker له لارې د `/bootstrap/superadmin` خوندي endpoint کارول کېږي. په اپ کې د همدې UID حساب ته ننوځئ او د «زما حساب د ستر اډمین په توګه فعال کړه» تڼۍ کېکاږئ. endpoint د Firebase ID Token تاییدوي او یوازې همدې ثابت UID ته اجازه ورکوي. د نورو حسابونو رولونه نه شي بدلولای.
 
 ## د دې نسخې اصلاحات
 
@@ -28,7 +28,7 @@
 
 ## د Deploy لارښوونې
 
-د Deploy لپاره د `README-DEPLOY-PASHTO.md` لارښود تعقیب کړئ. دا نسخه اداري عملیات Cloudflare Worker ته لېږدوي؛ یوازې Firestore Rules Deploy کېږي. Firebase Functions او Firebase Storage مه Deploy کوئ. **Bootstrap مه چلوئ**؛ ځکه دواړه Super Admin حسابونه مخکې ثبت دي.
+د Deploy لپاره د `README-DEPLOY-PASHTO.md` لارښود تعقیب کړئ. دا نسخه اداري عملیات Cloudflare Worker ته لېږدوي؛ یوازې Firestore Rules Deploy کېږي. Firebase Functions او Firebase Storage مه Deploy کوئ. د مالک حساب د فعالولو لپاره د اپ دننه ځانګړې تڼۍ وکاروئ؛ د Admin SDK سکریپټ یوازې د اضطراري او باوري سروري عملیاتو لپاره دی.
 
 ## د Super Admin د اپلوډ د خطا تشخیص
 

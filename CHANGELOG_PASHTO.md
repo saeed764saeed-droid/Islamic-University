@@ -9,3 +9,11 @@
 - د درسونو forward/approve/reject او د R2 رسنیو د تایید/رد حالتونه Worker ته انتقال شوي.
 - Firebase deployment اوس یوازې Firestore Rules خپروي؛ Functions او Firebase Storage نه Deploy کوي.
 - موجود R2 bucket او `MY_BUCKET` binding ساتل شوي.
+
+
+## 2026-11-26 – د Super Admin او Deploy اصلاحات
+- د تایید شوي مالک UID لپاره د Cloudflare Worker خوندي `/bootstrap/superadmin` لاره اضافه شوه.
+- د اپ تنظیماتو کې د مالک حساب لپاره د Super Admin فعالولو تڼۍ اضافه شوه.
+- GitHub Actions فایلونه `.github/workflows/` ته انتقال شول.
+- د Expo مالک او EAS Project ID د کارن له تایید شوو پروژوي معلوماتو سره برابر شول.
+- د Gradle/Expo config plugin لپاره مستقیم dependency ثبت شو او د ورک player artwork فایل reference لرې شو.

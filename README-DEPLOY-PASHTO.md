@@ -14,22 +14,24 @@
 4. موجود R2 binding `MY_BUCKET` او bucket `islamic-university-files` هماغسې وساتئ.
 
 ## Deploy ترتیب
-1. د GitHub `main` څانګې ته د پروژې فایلونه پورته کړئ.
+1. د GitHub `main` څانګې ته د پروژې ټول فایلونه پورته کړئ؛ په ځانګړي ډول پټ `.github/workflows/` فولډر هم وساتئ.
 2. د `Deploy Cloudflare Worker` workflow اجرا کړئ؛ یا د `worker/index.js` بدلون push کړئ.
-3. د `Deploy Firestore Rules Only` workflow اجرا کړئ. دا یوازې `firestore.rules` خپروي؛ Firebase Functions او Firebase Storage نه خپروي.
-4. د Worker روغتیا د `https://islamic-university-storage.saeed764saeed.workers.dev/health` له لارې وګورئ.
-5. د اپلیکیشن د اداري حسابونو، درسونو کتنې او R2 اپلوډ حقیقي ازموینه وکړئ.
-6. یوازې د ټولو ازموینو تر بریا وروسته `Build Android APK` اجرا کړئ.
+3. د Worker روغتیا د `https://islamic-university-storage.saeed764saeed.workers.dev/health` له لارې وګورئ.
+4. د `Deploy Firestore Rules Only` workflow اجرا کړئ. دا یوازې `firestore.rules` خپروي؛ Firebase Functions او Firebase Storage نه خپروي.
+5. د `Build Android APK` workflow اجرا او نوی APK په موبایل کې نصب کړئ؛ د Super Admin د فعالولو تڼۍ په نوې نسخه کې ده.
+6. په نوې اپ کې د مالک UID حساب ته ننوځئ او «زما حساب د ستر اډمین په توګه فعال کړه» تڼۍ ووهئ.
+7. د Super Admin حالت، د درس اپلوډ، R2 ذخیره او د درس تایید/خپرول په حقیقي ډول وازمویئ.
 
 ## د رسنیو جریان
 - اپ د Firebase ID Token سره `PUT /upload/{mediaId}` ته فایل لېږي.
 - Worker د Firestore `mediaAssets/{mediaId}` مالکیت او pending حالت تاییدوي او فایل R2 ته لیکي.
+- د لومړي Super Admin لپاره ځانګړې لاره `/bootstrap/superadmin` ده؛ یوازې د کوډ دننه ثبت شوی مالک UID او معتبر Firebase ID Token یې کارولی شي. په اپ کې د Firebase ننوتلو وروسته د «زما حساب د ستر اډمین په توګه فعال کړه» تڼۍ وکاروئ.
 - د اداري غوښتنې پنځه لارې د Worker لاندې دي: `/admin/listPendingLessons`، `/admin/listUserRoles`، `/admin/setUserRoleStatus`، `/admin/setUserRoleByEmail`، `/admin/reviewPendingLesson`.
 - د تایید وروسته Worker د رسنیو حالت approved کوي او خپور شوی درس په Firestore کې ثبتوي.
 - رد شوي فایلونه د Worker `DELETE /media/{mediaId}` له لارې پاکېږي.
 
 ## د ازموینې مهم شرطونه
-- دواړه موجود Super Admin حسابونه باید په Firebase Auth کې فعال او په Firestore `userRoles/{uid}` کې `role: "superadmin"` ولري.
+- د مالک UID `CtaXP0WGrFfusIKSsMFYP4ZKb6P2` باید په Firebase Authentication کې فعال وي. د لومړي ځل لپاره په اپ کې د مالک حساب ته ننوځئ او د Super Admin فعالولو تڼۍ وکاروئ. نور موجود Super Admin حسابونه نه حذفېږي.
 - د Worker Secret ارزښت باید د پروژې `islamic-university-27d8f` د Service Account JSON وي.
 - د Worker د Firestore/Identity Toolkit د لاسرسي لپاره د Service Account IAM رولونه اړین دي.
 - د `FIREBASE_SERVICE_ACCOUNT` Secret ارزښت په سکرین‌شاټ یا چټ کې مه ښکاره کوئ.
