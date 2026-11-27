@@ -975,6 +975,7 @@ export default function App() {
         }
       }
       await loadPendingLessons();
+      if (decision === 'approve') await syncAllPublishedLessons(true);
       const messages = { approve: 'درس تایید او خپور شو.', reject: 'درس رد شو.', forward: 'درس د عمومي اډمین وروستۍ کتنې ته ولېږل شو.' };
       Alert.alert('بشپړ شو', messages[decision] || 'عملیه بشپړه شوه.');
     } catch (error) {
@@ -1009,6 +1010,7 @@ export default function App() {
     const mediaRef = doc(db, 'mediaAssets', mediaId);
     let blob = null;
     let metadataCreated = false;
+    let uploadStage = 'د موبایل له حافظې څخه د فایل لوستل';
     try {
       const response = await fetch(file.uri);
       if (!response.ok && response.status !== 0) throw new Error('محلي فایل ونه لوستل شو.');
@@ -1017,12 +1019,14 @@ export default function App() {
       if (!size) throw new Error('د فایل اندازه ونه پېژندل شوه.');
       if (size > 100 * 1024 * 1024) throw new Error('د فایل اندازه له ۱۰۰ MB څخه زیاته ده؛ مهرباني وکړئ فایل کوچنی یا په برخو ووېشئ.');
       const mimeType = file.mimeType || 'application/octet-stream';
+      uploadStage = 'په Firebase کې د فایل معلومات ثبتول';
       await setDoc(mediaRef, {
         mediaId, ownerUid: uid, itemId: String(itemId), section, folder, mediaType,
         fileName, mimeType, size, storagePath, status: 'pending',
         createdAt: serverTimestamp(), reviewedBy: null, storageProvider: 'cloudflare-r2'
       });
       metadataCreated = true;
+      uploadStage = 'Cloudflare R2 ته د فایل اصلي معلومات پورته کول';
       const token = await auth.currentUser.getIdToken();
       const uploadResponse = await fetch(`${MEDIA_WORKER_URL}/upload/${encodeURIComponent(mediaId)}`, {
         method: 'PUT',
@@ -1046,7 +1050,7 @@ export default function App() {
       }
       try { blob?.close?.(); } catch (closeError) {}
       console.error('R2 media upload error:', error);
-      throw new Error(`د ${file.name || mediaType} فایل پورته نه شو: ${error.message || 'ناپېژندل شوې ستونزه'}`);
+      throw new Error(`د ${file.name || mediaType} فایل پورته نه شو. پړاو: ${uploadStage}. ${error.message || 'ناپېژندل شوې ستونزه'}`);
     }
   }
 
