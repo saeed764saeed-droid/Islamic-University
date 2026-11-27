@@ -35,9 +35,9 @@ const auth = getAuth();
     const bootstrapData = systemSnap.exists ? systemSnap.data() : {};
 
     if (bootstrapData.firstSuperAdminUid &&
-        bootstrapData.firstSuperAdminUid !== uid) {
+        !SUPERADMIN_UIDS.includes(bootstrapData.firstSuperAdminUid)) {
       throw new Error(
-        'Initial bootstrap belongs to another account. Use the existing Super Admin authorization flow.'
+        'The recorded first Super Admin is not in the approved Super Admin list.'
       );
     }
 
@@ -45,7 +45,7 @@ const auth = getAuth();
         roleSnap.data().role === 'superadmin' &&
         roleSnap.data().active === true) {
       tx.set(systemRef, {
-        firstSuperAdminUid: uid,
+        ...(bootstrapData.firstSuperAdminUid ? {} : { firstSuperAdminUid: uid }),
         bootstrappedAt: FieldValue.serverTimestamp()
       }, { merge: true });
       return;
@@ -63,7 +63,7 @@ const auth = getAuth();
     }, { merge: true });
 
     tx.set(systemRef, {
-      firstSuperAdminUid: uid,
+      ...(bootstrapData.firstSuperAdminUid ? {} : { firstSuperAdminUid: uid }),
       bootstrappedAt: FieldValue.serverTimestamp()
     }, { merge: true });
   });
