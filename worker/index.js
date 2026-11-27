@@ -113,12 +113,11 @@ function parseRange(value, size) {
 }
 async function serveMedia(request, env, id) {
   if (!/^[A-Za-z0-9_-]{1,160}$/.test(id)) return json({ error: 'Invalid media id' }, 400);
-  // عام اور بې له Gmail کاروونکي هم تایید شوي فایلونه لوستلی شي.
-  // د Worker Service Account یوازې د metadata لوستلو لپاره کاروو؛ د کارن login نه غواړو.
+  // د تایید شوو mediaAssets اسناد په Firestore Rules کې عام لوستلو ته اجازه لري.
+  // نو عام اورېدونکي/لوستونکي د Service Account Secret ته اړتیا نه لري.
   let fields;
   try {
-    const serviceToken = await getServiceAccessToken(env);
-    fields = await getFirestoreDocument(`mediaAssets/${encodeURIComponent(id)}`, serviceToken);
+    fields = await getFirestoreDocument(`mediaAssets/${encodeURIComponent(id)}`, null);
   } catch (error) {
     console.error('Public media metadata lookup failed', { mediaId: id, message: String(error?.message || error).slice(0, 240) });
     return json({ error: 'د فایل معلومات اوس نه شي لوستل کېدای؛ لږ وروسته بیا هڅه وکړئ.' }, 503);
@@ -177,16 +176,60 @@ function b64url(bytes) {
   for (const b of bytes) binary += String.fromCharCode(b);
   return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
 }
+function readServiceAccount(env) {
+  const raw = typeof env.FIREBASE_SERVICE_ACCOUNT === 'string'
+    ? env.FIREBASE_SERVICE_ACCOUNT.trim()
+    : '';
+  if (!raw) {
+    throw new Error('FIREBASE_SERVICE_ACCOUNT is missing from this Worker environment');
+  }
+
+  let sa;
+  try {
+    sa = JSON.parse(raw);
+  } catch {
+    throw new Error('FIREBASE_SERVICE_ACCOUNT must contain the complete valid Service Account JSON');
+  }
+
+  const privateKey = String(sa.private_key || '').replace(/\\n/g, '\\n').trim();
+  if (!sa.client_email || !privateKey || sa.project_id !== PROJECT_ID) {
+    throw new Error('Firebase Service Account project_id, client_email, or private_key is missing/mismatched');
+  }
+  if (!privateKey.includes('-----BEGIN PRIVATE KEY-----') ||
+      !privateKey.includes('-----END PRIVATE KEY-----')) {
+    throw new Error('Firebase Service Account private_key is not a valid PEM private key');
+  }
+  return { ...sa, private_key: privateKey };
+}
+function inspectServiceAccount(env) {
+  const raw = typeof env.FIREBASE_SERVICE_ACCOUNT === 'string'
+    ? env.FIREBASE_SERVICE_ACCOUNT.trim()
+    : '';
+  if (!raw) return { configured: false, validJson: false, projectMatches: false, hasClientEmail: false, hasPrivateKey: false, privateKeyDecodes: false };
+  try {
+    const sa = JSON.parse(raw);
+    const key = String(sa.private_key || '').replace(/\\n/g, '\\n');
+    let privateKeyDecodes = false;
+    try { pemBytes(key); privateKeyDecodes = true; } catch {}
+    return {
+      configured: true,
+      validJson: true,
+      projectMatches: sa.project_id === PROJECT_ID,
+      hasClientEmail: Boolean(sa.client_email),
+      hasPrivateKey: key.includes('-----BEGIN PRIVATE KEY-----') && key.includes('-----END PRIVATE KEY-----'),
+      privateKeyDecodes
+    };
+  } catch {
+    return { configured: true, validJson: false, projectMatches: false, hasClientEmail: false, hasPrivateKey: false, privateKeyDecodes: false };
+  }
+}
 function pemBytes(pem) {
-  const body = String(pem).replace(/-----BEGIN PRIVATE KEY-----|-----END PRIVATE KEY-----|\s/g, '');
-  return decodeBase64Url(body.replace(/\+/g, '-').replace(/\//g, '_'));
+  const body = String(pem).replace(/-----BEGIN PRIVATE KEY-----|-----END PRIVATE KEY-----|\\s/g, '');
+  return decodeBase64Url(body.replace(/\\+/g, '-').replace(/\\//g, '_'));
 }
 async function getServiceAccessToken(env) {
   if (serviceTokenCache && Date.now() < serviceTokenExpiry - 60000) return serviceTokenCache;
-  let sa;
-  try { sa = JSON.parse(env.FIREBASE_SERVICE_ACCOUNT || ''); }
-  catch { throw new Error('FIREBASE_SERVICE_ACCOUNT secret is missing or invalid JSON'); }
-  if (!sa.client_email || !sa.private_key || sa.project_id !== PROJECT_ID) throw new Error('Firebase service account project/email/private key mismatch');
+  const sa = readServiceAccount(env);
   const now = Math.floor(Date.now() / 1000);
   const head = b64url(enc.encode(JSON.stringify({ alg: 'RS256', typ: 'JWT' })));
   const claim = b64url(enc.encode(JSON.stringify({ iss: sa.client_email, scope: 'https://www.googleapis.com/auth/datastore https://www.googleapis.com/auth/identitytoolkit', aud: sa.token_uri || 'https://oauth2.googleapis.com/token', iat: now, exp: now + 3600 })));
@@ -356,7 +399,7 @@ async function adminApi(request, env, action) {
       if(item.pdfCoverMediaId&&urls[item.pdfCoverMediaId]){item.pdfCoverUri=urls[item.pdfCoverMediaId];item.pdfCoverReviewStatus='approved';}
       if(item.audioTracks.length)item.audio=item.audioTracks[0].uri; item.cloudReviewStatus='approved';
       const publishedId=String(p.item?.id||lessonId);
-      writes.push({update:fsDoc('publishedLessons',publishedId,{item,ownerUid:p.ownerUid,section:p.section,folder:p.folder,scopeKey:p.scopeKey||`${p.section}::${p.folder}`,status:'approved',mediaIds,approvedBy:actor.uid}),updateTransforms:[serverTimestampTransform('approvedAt')]});
+      writes.push({update:fsDoc('publishedLessons',publishedId,{item,ownerUid:p.ownerUid,section:p.section,folder:p.folder,scopeKey:p.scopeKey||`${p.section}::${p.folder}`,status:'approved',mediaIds:ids,approvedBy:actor.uid}),updateTransforms:[serverTimestampTransform('approvedAt')]});
       writes.push(updateWrite('pendingLessons',lessonId,{status:'approved',reviewedBy:actor.uid},[serverTimestampTransform('reviewedAt')]));
     } else {
       for(const id of ids) writes.push(updateWrite('mediaAssets',id,{status:'rejected',reviewedBy:actor.uid},[serverTimestampTransform('reviewedAt')]));
@@ -443,7 +486,13 @@ export default {
       try { return await adminApi(request, env, parts[1]); }
       catch (error) { console.error('Worker admin API failed', { action: parts[1], message: String(error?.message || error).slice(0, 300) }); return json({ error: 'د اداري سرور په عملیاتو کې ستونزه رامنځته شوه.', detail: String(error?.message || 'Unknown error').slice(0, 240) }, 500); }
     }
-    if (url.pathname === '/health' && request.method === 'GET') return json({ status: 'online', service: 'Mirath Islam Media' });
+    if (url.pathname === '/health' && request.method === 'GET') return json({
+      status: 'online',
+      service: 'Mirath Islam Media',
+      projectId: PROJECT_ID,
+      r2Binding: Boolean(env.MY_BUCKET && typeof env.MY_BUCKET.put === 'function'),
+      serviceAccount: inspectServiceAccount(env)
+    });
     if (parts.length === 2 && parts[0] === 'upload' && request.method === 'PUT') return uploadMedia(request, env, parts[1]);
     if (parts.length === 2 && parts[0] === 'media' && ['GET', 'HEAD'].includes(request.method)) return serveMedia(request, env, parts[1]);
     if (parts.length === 2 && parts[0] === 'media' && request.method === 'DELETE') return deleteMedia(request, env, parts[1]);
