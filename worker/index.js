@@ -191,7 +191,7 @@ function readServiceAccount(env) {
     throw new Error('FIREBASE_SERVICE_ACCOUNT must contain the complete valid Service Account JSON');
   }
 
-  const privateKey = String(sa.private_key || '').replace(/\\n/g, '\\n').trim();
+  const privateKey = String(sa.private_key || '').replace(/\\n/g, '\n').trim();
   if (!sa.client_email || !privateKey || sa.project_id !== PROJECT_ID) {
     throw new Error('Firebase Service Account project_id, client_email, or private_key is missing/mismatched');
   }
@@ -208,7 +208,7 @@ function inspectServiceAccount(env) {
   if (!raw) return { configured: false, validJson: false, projectMatches: false, hasClientEmail: false, hasPrivateKey: false, privateKeyDecodes: false };
   try {
     const sa = JSON.parse(raw);
-    const key = String(sa.private_key || '').replace(/\\n/g, '\\n');
+    const key = String(sa.private_key || '').replace(/\\n/g, '\n');
     let privateKeyDecodes = false;
     try { pemBytes(key); privateKeyDecodes = true; } catch {}
     return {
@@ -224,9 +224,17 @@ function inspectServiceAccount(env) {
   }
 }
 function pemBytes(pem) {
-  const body = String(pem).replace(/-----BEGIN PRIVATE KEY-----|-----END PRIVATE KEY-----|\\s/g, '');
-  return decodeBase64Url(body.replace(/\\+/g, '-').replace(/\\//g, '_'));
+  // PKCS#8 PEM body is standard Base64, not Base64URL.
+  const body = String(pem)
+    .replace(/-----BEGIN PRIVATE KEY-----|-----END PRIVATE KEY-----/g, '')
+    .replace(/\s+/g, '');
+  if (!body || !/^[A-Za-z0-9+/]+=*$/.test(body)) {
+    throw new Error('Service Account private_key PEM body is not valid Base64');
+  }
+  const binary = atob(body);
+  return Uint8Array.from(binary, c => c.charCodeAt(0));
 }
+
 async function getServiceAccessToken(env) {
   if (serviceTokenCache && Date.now() < serviceTokenExpiry - 60000) return serviceTokenCache;
   const sa = readServiceAccount(env);
@@ -388,6 +396,11 @@ async function adminApi(request, env, action) {
     if(ids.length>50||ids.some(x=>!/^[A-Za-z0-9_-]{1,160}$/.test(x))) return json({error:'د فایلونو پېژندپاڼې ناسمې دي.'},400);
     const mediaRows=await Promise.all(ids.map(id=>adminGet(env,'mediaAssets',id)));
     if(mediaRows.some(x=>!x||x.fields.ownerUid!==p.ownerUid||x.fields.status!=='pending'||x.fields.storageProvider!=='cloudflare-r2'||typeof x.fields.storagePath!=='string'||!x.fields.storagePath.startsWith(`pending/${p.ownerUid}/`))) return json({error:'د درس یو یا څو فایلونه نیمګړي دي.'},409);
+    // Do not publish metadata unless every referenced object really exists in R2.
+    if (decision === 'approve') {
+      const checks = await Promise.all(mediaRows.map(row => env.MY_BUCKET.head(row.fields.storagePath)));
+      if (checks.some(object => !object)) return json({error:'د درس یو یا څو اصلي فایلونه په Cloudflare R2 کې نشته؛ درس نه شي خپرېدای.'},409);
+    }
     const writes=[];
     if(decision==='approve') {
       const urls={};
