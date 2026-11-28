@@ -374,7 +374,7 @@ const HOME_FOLDER_OPTIONS = [
   { key: 'society', title: 'کورنۍ او معاصر علوم', icon: 'people-outline', sections: ['اسلام، کورنۍ او ټولنه', 'اسلام او معاصر علوم'] }
 ];
 
-const HOME_FOLDER_OPTIONS = [
+const HOME_DESIGN_FOLDER_OPTIONS = [
   ...HOME_SECTION_GROUPS.map(group => ({ key: `group_${group.key}`, label: group.title })),
   { key: 'scholars', label: 'دروس المشایخ' },
   { key: 'shortcut_0', label: 'خوښ شوي فایلونه' },
@@ -8729,7 +8729,7 @@ export default function App() {
                 </View>;
               })}
               <Text style={[styles.cardHeading, { color: settings.headingColor, marginTop: 12 }]}>د کورپاڼې د چټکو برخو نومونه او نښې</Text>
-              {HOME_FOLDER_OPTIONS.filter(item => item.key.startsWith('shortcut_') || item.key.startsWith('wide_')).map(item => (
+              {HOME_DESIGN_FOLDER_OPTIONS.filter(item => item.key.startsWith('shortcut_') || item.key.startsWith('wide_')).map(item => (
                 <View key={item.key}>
                   <Field textColor={settings.textColor} label={`${item.label} – نوی نوم`} value={homeDesign.homeLabels?.[item.key] || item.label} onChangeText={value => updateHomeDesign({ homeLabels: { ...(homeDesign.homeLabels || {}), [item.key]: value } })} placeholder={item.label} />
                   {homeDesign.homeIcons?.[item.key] !== undefined || item.key.startsWith('shortcut_') || item.key.startsWith('wide_') ? <Field textColor={settings.textColor} label="د نښې نوم (Ionicons)" value={homeDesign.homeIcons?.[item.key] || ({ shortcut_0: 'heart-outline', shortcut_1: 'help-circle-outline', shortcut_2: 'library-outline', shortcut_3: 'school-outline', wide_0: 'moon-outline', wide_1: 'document-text-outline' }[item.key])} onChangeText={value => updateHomeDesign({ homeIcons: { ...(homeDesign.homeIcons || {}), [item.key]: value } })} placeholder="book-outline" /> : null}
@@ -8880,7 +8880,7 @@ export default function App() {
               <Text style={[styles.cardHeading, { color: settings.headingColor }]}>{t("د هر فولډر جلا تنظیم")}</Text>
               <Text style={styles.designLabel}>{t("هغه فولډر وټاکئ چې ډیزاین یې بدلول غواړئ")}</Text>
               <View style={styles.designFolderList}>
-                {HOME_FOLDER_OPTIONS.map(item => (
+                {HOME_DESIGN_FOLDER_OPTIONS.map(item => (
                   <TouchableOpacity key={item.key} onPress={() => setDesignFolderKey(item.key)} style={[styles.designFolderChoice, designFolderKey === item.key && styles.designChoiceActive]}>
                     <Text style={styles.designChoiceText}>{t(item.label)}</Text>
                   </TouchableOpacity>
