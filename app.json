@@ -25,6 +25,7 @@
       }
     },
     "description": "اسلامي علمي کتابتون",
-    "icon": "./assets/app-icon.png"
+    "icon": "./assets/app-icon.png",
+    "newArchEnabled": false
   }
 }
