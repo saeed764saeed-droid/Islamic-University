@@ -19,7 +19,7 @@ import {
 } from 'react-native';
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { auth, db, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, collection, doc, getDoc, getDocs, onSnapshot, query, where, orderBy, documentId, startAfter, limit, setDoc, deleteDoc, serverTimestamp } from './cloudflareClient';
+import { auth, db, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, confirmEmailVerification, resendEmailVerificationCode, signOut, collection, doc, getDoc, getDocs, onSnapshot, query, where, orderBy, documentId, startAfter, limit, setDoc, deleteDoc, serverTimestamp } from './cloudflareClient';
 import FormalLearning from './FormalLearning';
 
 import * as DocumentPicker from 'expo-document-picker';
@@ -507,6 +507,8 @@ export default function App() {
   const [backupStatus, setBackupStatus] = useState('');
   const [cloudflareEmail, setCloudflareEmail] = useState('');
   const [cloudflarePassword, setCloudflarePassword] = useState('');
+  const [cloudflareOtp, setCloudflareOtp] = useState('');
+  const [cloudflarePendingEmail, setCloudflarePendingEmail] = useState('');
   const [cloudflareUser, setCloudflareUser] = useState(null);
   const [cloudflareRole, setCloudflareRole] = useState('');
   const [cloudflareRoleData, setCloudflareRoleData] = useState(null);
@@ -694,6 +696,14 @@ export default function App() {
   const [formAudioPreviewId, setFormAudioPreviewId] = useState('');
   const [batchAudioAsLessons, setBatchAudioAsLessons] = useState(false);
   const formAudioPreviewPlayerRef = useRef(null);
+  useEffect(() => {
+    let active = true;
+    AsyncStorage.getItem('mirath_pending_verification_email_v1').then(value => {
+      if (active && value && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) setCloudflarePendingEmail(value);
+    }).catch(() => {});
+    return () => { active = false; };
+  }, []);
+
   useEffect(() => () => { try { formAudioPreviewPlayerRef.current?.remove?.(); } catch (error) {} }, []);
   const [formAttachments, setFormAttachments] = useState([]);
   const [formPDF, setFormPDF] = useState('');
@@ -1268,12 +1278,61 @@ export default function App() {
     }
     try {
       setCloudflareBusy(true);
-      await createUserWithEmailAndPassword(auth, email, cloudflarePassword);
-      setCloudflarePassword('');
-      Alert.alert('حساب جوړ شو', 'حساب جوړ او داخل شو. اوس د همدې ایمیل لپاره د ستر اډمین فعالولو تڼۍ وکاروئ.');
+      const result = await createUserWithEmailAndPassword(auth, email, cloudflarePassword);
+      if (result?.pendingVerification) {
+        setCloudflarePendingEmail(email);
+        await AsyncStorage.setItem('mirath_pending_verification_email_v1', email);
+        setCloudflareOtp('');
+        setCloudflarePassword('');
+        setCloudflareStatus(`د تایید شپږ عددي کوډ ${email} ته ولېږل شو. د کوډ وخت ۱۰ دقیقې دی.`);
+        Alert.alert('کوډ ولېږل شو', 'خپل Gmail خلاص کړه، شپږ عددي کوډ واخله او دلته یې ولیکه.');
+      } else {
+        throw new Error('د تایید غوښتنه په سمه توګه ثبت نه شوه.');
+      }
     } catch (error) {
       console.error('Cloudflare account creation error:', error);
-      Alert.alert('د حساب جوړولو ستونزه', error?.message || 'حساب جوړ نه شو. د Worker، D1 او AUTH_SECRET تنظیمات وګورئ.');
+      if (/نوی کوډ|۳۰ ثانیو|له یوې دقیقې/.test(String(error?.message || ''))) {
+        setCloudflarePendingEmail(email);
+        await AsyncStorage.setItem('mirath_pending_verification_email_v1', email).catch(() => {});
+        setCloudflareStatus('د تایید غوښتنه مخکې ثبت شوې؛ که کوډ دې ترلاسه کړی وي، شپږ عددي کوډ ولیکه یا د بیا لېږلو تڼۍ وکاروه.');
+      }
+      Alert.alert('د حساب جوړولو ستونزه', error?.message || 'حساب جوړ نه شو. د ایمیل خدمت او Cloudflare تنظیمات وګورئ.');
+    } finally {
+      setCloudflareBusy(false);
+    }
+  }
+
+  async function verifyCloudflareEmailCode() {
+    const email = cloudflarePendingEmail || cloudflareEmail.trim().toLowerCase();
+    if (!email || !/^\d{6}$/.test(cloudflareOtp.trim())) {
+      Alert.alert('ناسم کوډ', 'د Gmail شپږ عددي کوډ ولیکئ.');
+      return;
+    }
+    try {
+      setCloudflareBusy(true);
+      await confirmEmailVerification(email, cloudflareOtp.trim());
+      setCloudflareOtp('');
+      setCloudflarePendingEmail('');
+      await AsyncStorage.removeItem('mirath_pending_verification_email_v1').catch(() => {});
+      setCloudflareStatus('Gmail تایید شو او حساب فعال شو. اوس د ستر اډمین فعالولو تڼۍ وکاروئ.');
+      Alert.alert('حساب تایید شو', 'ستاسو Gmail تایید او حساب فعال شو.');
+    } catch (error) {
+      Alert.alert('د تایید ستونزه', error?.message || 'کوډ تایید نه شو.');
+    } finally {
+      setCloudflareBusy(false);
+    }
+  }
+
+  async function resendCloudflareEmailCode() {
+    const email = cloudflarePendingEmail || cloudflareEmail.trim().toLowerCase();
+    if (!email) return;
+    try {
+      setCloudflareBusy(true);
+      await resendEmailVerificationCode(email);
+      setCloudflareStatus(`نوی شپږ عددي کوډ ${email} ته ولېږل شو.`);
+      Alert.alert('کوډ ولېږل شو', 'نوی کوډ خپل Gmail کې وګوره.');
+    } catch (error) {
+      Alert.alert('د کوډ لېږلو ستونزه', error?.message || 'نوی کوډ ونه لېږل شو.');
     } finally {
       setCloudflareBusy(false);
     }
@@ -1291,7 +1350,7 @@ export default function App() {
       Alert.alert('بریالی', 'حساب Cloudflare حساب ته ننوتل بریالي شول؛ اجازه به یې د ټاکل شوي رول له مخې وټاکل شي.');
     } catch (error) {
       console.error('Cloudflare login error:', error);
-      Alert.alert('د ننوتلو ستونزه', 'ایمیل یا پاسورډ سم نه دی، یا د Cloudflare Worker یا D1 تنظیمات بشپړ نه دي.');
+      Alert.alert('د ننوتلو ستونزه', error?.message || 'ایمیل یا پاسورډ سم نه دی.');
     } finally {
       setCloudflareBusy(false);
     }
@@ -8371,11 +8430,17 @@ export default function App() {
                 {cloudflareRole === 'user' ? <Text style={styles.smallMuted}>دا حساب د مدیریت یا اپلوډ اجازه نه لري؛ یوازې خپاره شوي مواد کارولی شي.</Text> : null}
                 <GoldButton title="له Cloudflare څخه وتل" secondary onPress={cloudflareAdminLogout} />
               </> : <>
-                <TextInput value={cloudflareEmail} onChangeText={setCloudflareEmail} placeholder="د مدیر/اپلوډر ایمیل" placeholderTextColor={COLORS.muted} keyboardType="email-address" autoCapitalize="none" autoCorrect={false} style={[styles.designColorInput, { marginTop: 10 }]} textAlign="left" />
+                <TextInput value={cloudflareEmail} onChangeText={setCloudflareEmail} placeholder="د حساب Gmail" placeholderTextColor={COLORS.muted} keyboardType="email-address" autoCapitalize="none" autoCorrect={false} style={[styles.designColorInput, { marginTop: 10 }]} textAlign="left" />
                 <TextInput value={cloudflarePassword} onChangeText={setCloudflarePassword} placeholder="پاسورډ" placeholderTextColor={COLORS.muted} secureTextEntry style={[styles.designColorInput, { marginTop: 8 }]} textAlign="left" />
-                <GoldButton title={cloudflareBusy ? 'نښلول کېږي...' : 'Cloudflare ته ننوتل'} secondary onPress={cloudflareAdminLogin} />
+                <GoldButton title={cloudflareBusy ? 'نښلول کېږي...' : 'حساب ته ننوتل'} secondary onPress={cloudflareAdminLogin} />
                 <GoldButton title={cloudflareBusy ? 'حساب جوړېږي...' : '＋ نوی Cloudflare حساب جوړول'} onPress={cloudflareCreateAccount} />
-                <Text style={styles.smallMuted}>د نوي حساب لپاره معتبر ایمیل او لږ تر لږه ۸ توري پاسورډ ولیکئ. نوی حساب په پیل کې عادي کارن وي؛ ستر اډمین یوازې د BOOTSTRAP_ADMIN_EMAIL له تایید وروسته فعالېږي.</Text>
+                {cloudflarePendingEmail ? <>
+                  <Text style={[styles.smallMuted, { marginTop: 10 }]}>د تایید کوډ دې ایمیل ته لېږل شوی: {cloudflarePendingEmail}</Text>
+                  <TextInput value={cloudflareOtp} onChangeText={value => setCloudflareOtp(value.replace(/[^0-9]/g, '').slice(0, 6))} placeholder="شپږ عددي کوډ" placeholderTextColor={COLORS.muted} keyboardType="number-pad" maxLength={6} style={[styles.designColorInput, { marginTop: 8 }]} textAlign="center" />
+                  <GoldButton title={cloudflareBusy ? 'تایید کېږي...' : 'د Gmail کوډ تاییدول'} onPress={verifyCloudflareEmailCode} />
+                  <GoldButton title={cloudflareBusy ? 'لېږل کېږي...' : 'نوی کوډ بیا لېږل'} secondary onPress={resendCloudflareEmailCode} />
+                </> : null}
+                <Text style={styles.smallMuted}>د نوي حساب لپاره معتبر Gmail او لږ تر لږه ۸ توري پاسورډ ولیکئ. شپږ عددي کوډ به Gmail ته ولېږل شي؛ تر تایید مخکې حساب نه فعالېږي.</Text>
               </>}
               {cloudflareBusy ? <View style={{ paddingVertical: 8, alignItems: 'center' }}><ActivityIndicator color={COLORS.gold} /><Text style={styles.smallMuted}>له آنلاین ډیټابېس سره اړیکه روانه ده...</Text></View> : null}
               <Text style={[styles.smallMuted, { marginTop: 8 }]}>د آډیو، PDF او نورو رسنیو فایلونه په Cloudflare R2 کې ساتل کېږي؛ د اپلوډر فایلونه د برخې کتنې او د عمومي اډمین وروستي تایید مخکې نه خپرېږي. افلاین کارونې لپاره فایلونه په موبایل کې ډاونلوډ کېدای شي.</Text>

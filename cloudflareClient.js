@@ -44,9 +44,22 @@ async function authRequest(path, email, password) {
   return { user: currentUser };
 }
 export const signInWithEmailAndPassword = (_auth,email,password) => authRequest('/v1/auth/login',email,password);
-export const createUserWithEmailAndPassword = (_auth,email,password) => authRequest('/v1/auth/register',email,password);
+export const createUserWithEmailAndPassword = async (_auth,email,password) => {
+  await loadSession();
+  return api('/v1/auth/register', { method:'POST', body:JSON.stringify({email:String(email).trim().toLowerCase(),password}) });
+};
+export async function confirmEmailVerification(email,code) {
+  await loadSession();
+  const result=await api('/v1/auth/verify-email',{method:'POST',body:JSON.stringify({email:String(email).trim().toLowerCase(),code:String(code).trim()})});
+  token=result.token; currentUser=withToken(result.user); await AsyncStorage.setItem(TOKEN_KEY,token); notify();
+  return {user:currentUser};
+}
+export async function resendEmailVerificationCode(email) {
+  await loadSession();
+  return api('/v1/auth/resend-code',{method:'POST',body:JSON.stringify({email:String(email).trim().toLowerCase()})});
+}
 export async function signOut(_auth) { return auth.signOut(); }
-export async function sendEmailVerification() { return { success:true, note:'Email verification is not configured; password authentication is active.' }; }
+export async function sendEmailVerification() { throw new Error('د ایمیل تایید د شپږ عددي کوډ له لارې ترسره کېږي.'); }
 
 function withToken(user){ return user ? {...user, getIdToken:async()=>token, reload:async()=>{}, emailVerified:true} : null; }
 const ts = () => new Date().toISOString();

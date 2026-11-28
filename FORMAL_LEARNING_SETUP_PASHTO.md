@@ -1,3 +1,5 @@
+> **د فعال Backend مهم وضاحت:** دا سند د پخوانۍ Firebase/Firestore طرحې ځینې لارښوونې لري. د اوسني لومړني خپرېدونکي جوړښت لپاره Cloudflare Worker + D1 + R2 کارول کېږي. د Deploy او Secrets یوازینی تازه لارښود `README-DEPLOY-PASHTO.md` دی؛ د Firebase Functions یا Firebase Storage د Deploy لارښوونې مه تعقیبوئ.
+
 # د رسمي زده کړو د سیستم لارښود
 
 ## د کاروونکو دوه لارې

@@ -1,24 +1,31 @@
-# میراث اسلام — Cloudflare Edition
+# میراث اسلام — د لومړۍ خپرېدونکې نسخې سرچینه
 
-دا پروژه د اسلامي علمي کتابتون د React Native/Expo اپلیکیشن دی. د اصلي اپلیکیشن ډیزاین، د کتابونو او درسونو جوړښت، محلي تنظیمات، نوټونه، خوښې، اذکار، لمونځ وختونه، آفلاین فایلونه او نور موجود UI فیچرونه ساتل شوي دي.
+دا پروژه د Android اپلیکیشن او آنلاین کتابتون لپاره ده.
 
-## Backend
+## فعاله معماري
+- موبایل اپ: Expo / React Native (`App.js`, `FormalLearning.js`).
+- حسابونه او تایید: Cloudflare Worker + D1.
+- شپږ عددي ایمیل کوډ: Resend Email API؛ کوډ ۱۰ دقیقې اعتبار لري، تر ۵ ناسمې هڅې اجازه لري او د بیا لېږلو محدودیت لري.
+- د درسونو اصلي آډیو/PDF: Cloudflare R2.
+- د درسونو معلومات او د کارن رولونه: Cloudflare D1 د `documents` جدول له لارې.
+- عام لوستونکي حساب ته اړتیا نه لري؛ خپاره شوي درسونه له آنلاین کتابتون څخه اخلي.
+- آفلاین اورېدل/لوستل: آډیو او PDF د موبایل په محلي حافظه کې خوندي کېږي. د اپ حذف د محلي آفلاین فایلونو د حذف سبب کېږي؛ له بیا نصب وروسته باید له R2 څخه بیا ډاونلوډ شي.
 
-- Cloudflare Worker: API، ننوتل، رولونه، صلاحیتونه، د درسونو کتنه/خپرول او د رسنیو لاسرسی.
-- Cloudflare D1: د کارن حسابونه، رولونه، د درسونو metadata، کورسونه، enrollment، ازموینې او نور JSON اسناد.
-- Cloudflare R2: د آډیو، PDF، ویډیو او نورو رسنیو اصلي فایلونه.
-- موبایل: د کارن شخصي نوټونه، خوښې، تنظیمات او آفلاین فایلونه په محلي حافظه کې ساتي.
+## مهم فایلونه
+- `App.js` — د اپلیکیشن اصلي UI او د درسونو همغږي.
+- `cloudflareClient.js` — د موبایل او Worker ترمنځ API.
+- `worker/index.js` — حسابونه، OTP، رولونه، د درسونو تایید، R2 اپلوډ/ډاونلوډ.
+- `worker/schema.sql` — د D1 جدولونه.
+- `worker/wrangler.toml` — د Worker، D1 او R2 تړاو.
+- `.github/workflows/deploy-worker.yml` — د Worker او D1 schema نشر.
+- `.github/workflows/build.yml` — د Android APK جوړول.
 
-**په دې پروژه کې د Firebase SDK، Firebase Authentication، Firestore، Firebase Functions، Firebase config او Firebase deploy workflow نشته.**
+## د حساب جوړولو لړۍ
+1. کارن ایمیل او لږ تر لږه ۸ توري پاسورډ ورکوي.
+2. Worker د ایمیل لپاره ۶ عددي کوډ جوړوي او د Resend له لارې یې لېږي.
+3. کوډ ۱۰ دقیقې اعتبار لري؛ پنځه ناسمې هڅې وروسته نوی کوډ ته اړتیا ده.
+4. یوازې د سم کوډ وروسته کارن په D1 کې د `email_verified=1` په حالت کې جوړېږي او ننوتل ورته کېږي.
+5. د ستر اډمین لومړنی حساب یوازې د `BOOTSTRAP_ADMIN_EMAIL` له برابر، تایید شوي ایمیل څخه فعالېږي.
 
-## د نصب او خپرولو لار
-
-1. د Cloudflare بشپړ تنظیم، D1 database، secrets او R2 binding لپاره `CLOUDFLARE_MIGRATION_SETUP_PASHTO.md` ولولئ.
-2. د `worker/wrangler.toml` د `database_id` ارزښت د خپل Cloudflare D1 ID سره بدل کړئ.
-3. د D1 schema تطبیق او Worker deploy کړئ.
-4. د اپ ریښه کې `npm install` او بیا `npx expo start` یا د EAS Android build اجرا کړئ.
-5. د لومړي ستر اډمین لپاره، د `BOOTSTRAP_ADMIN_EMAIL` ایمیل په وسیله د Formal Learning له برخې حساب جوړ کړئ، بیا په Settings کې ننوتل او د Super Admin فعالولو تڼۍ وکاروئ.
-
-## د ازموینې حدود
-
-په دې چاپېریال کې د Worker JavaScript syntax، د D1 schema، د پروژې د Firebase importونو حذف او د ZIP جوړښت محلي کتنه کېږي. د کارن د Cloudflare حساب ته لاسرسی نه لرو؛ نو D1 database باید د کارن په حساب کې جوړ، secretونه ثبت او Worker deploy شي. تر دې کارونو او د حقیقي Android device د end-to-end ازموینې مخکې دا فایلونه د بشپړ deploy شوي production release په توګه مه ګڼئ.
+## مهم
+`functions/`، `firebaseClient.js`، `firestore.rules` او `storage.rules` د پخوانۍ Firebase تجربوي لارې پاتې شوني دي؛ د دې فعالې نسخې د Deploy لپاره یې مه کاروئ. اوسنی فعال Backend Cloudflare Worker + D1 + R2 دی.
