@@ -19,6 +19,7 @@ import {
 } from 'react-native';
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Asset } from 'expo-asset';
 import { auth, db, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, confirmEmailVerification, resendEmailVerificationCode, signOut, collection, doc, getDoc, getDocs, onSnapshot, query, where, orderBy, documentId, startAfter, limit, setDoc, deleteDoc, serverTimestamp } from './cloudflareClient';
 import FormalLearning from './FormalLearning';
 
@@ -355,7 +356,14 @@ const DEFAULT_HOME_DESIGN = {
   scholarsSubtitle: 'د علماوو او مشایخو علمي درسونه'
 };
 
-const HOME_SECTION_GROUPS = [
+// درې ساده، سپک او د کتابتون لپاره مناسب ډیزاینونه؛ یوازې ظاهري بڼه بدلوي.
+const LIBRARY_DESIGN_PRESETS = [
+  { id: 'emerald-gold', name: 'شین او طلایي', values: { pageBackground: '#17231B', headerBackground: '#064027', prayerBackground: '#08452C', navBackground: '#022417', folderBackground: '#075033', folderTextColor: '#FFF8E8', folderIconColor: '#E4C879', folderBorderColor: '#E4C879', folderBorderWidth: 1, folderRadius: 12, folderHeight: 62, subFolderBackground: '#294A38', subFolderTextColor: '#F5E5B1' } },
+  { id: 'cream-brown', name: 'کریم او نسواري', values: { pageBackground: '#F3EBDD', headerBackground: '#5B4632', prayerBackground: '#71583C', navBackground: '#3E3024', folderBackground: '#E6D5B8', folderTextColor: '#392A1C', folderIconColor: '#936B35', folderBorderColor: '#B99A68', folderBorderWidth: 1, folderRadius: 10, folderHeight: 60, subFolderBackground: '#EFE3D0', subFolderTextColor: '#4B3828' } },
+  { id: 'blue-silver', name: 'آبي او سپین', values: { pageBackground: '#E8EFF5', headerBackground: '#173B59', prayerBackground: '#244F70', navBackground: '#102C43', folderBackground: '#D7E5F0', folderTextColor: '#17324A', folderIconColor: '#497DA3', folderBorderColor: '#8EADC4', folderBorderWidth: 1, folderRadius: 10, folderHeight: 60, subFolderBackground: '#EAF1F6', subFolderTextColor: '#24445D' } }
+];
+
+const HOME_FOLDER_OPTIONS = [
   { key: 'quran', title: 'قرآن او علوم القرآن', icon: 'book-outline', sections: ['قرآن کریم او علوم القرآن'] },
   { key: 'hadith', title: 'حدیث او علوم الحدیث', icon: 'library-outline', sections: ['حدیث او علوم الحدیث'] },
   { key: 'fiqh', title: 'فقه، فتاوی او مسائل', icon: 'scale-outline', sections: ['فقه او فروع', 'فتاوی او معاصرې مسئلې'] },
@@ -499,6 +507,8 @@ export default function App() {
   const skipNavigationCaptureRef = useRef(false);
   const [bookmarkEditor, setBookmarkEditor] = useState({ type: '', id: '', title: '', note: '' });
   const [designFolderKey, setDesignFolderKey] = useState('section_0');
+  const [designSectionChoice, setDesignSectionChoice] = useState(SECTIONS[0]);
+  const [designRootFolderChoice, setDesignRootFolderChoice] = useState('');
   const [designCustomColor, setDesignCustomColor] = useState('#E4C879');
 
   const [loading, setLoading] = useState(true);
@@ -513,6 +523,7 @@ export default function App() {
   const [cloudflareRole, setCloudflareRole] = useState('');
   const [cloudflareRoleData, setCloudflareRoleData] = useState(null);
   const [pendingLessons, setPendingLessons] = useState([]);
+  const [selectedPendingLessonIds, setSelectedPendingLessonIds] = useState([]);
   const [auditLogs, setAuditLogs] = useState([]);
   const [managedUsers, setManagedUsers] = useState([]);
   const [newRoleEmail, setNewRoleEmail] = useState('');
@@ -661,6 +672,8 @@ export default function App() {
     audioCoverSubtitle: 'د قرآن او سنت د علمونو مرکز',
     audioCoverTextColor: '#E4C879',
     audioCoverImageUri: '',
+    allowUserDesignSelection: false,
+    personalHomeDesign: null,
     calculationMethod: 'Karachi',
     madhab: 'Hanafi',
 
@@ -990,6 +1003,42 @@ export default function App() {
       console.error('Lesson review error:', error);
       Alert.alert('ستونزه', error?.message || 'د درس د بیاکتنې پر مهال ستونزه رامنځته شوه.');
     } finally { setCloudflareBusy(false); }
+  }
+
+  async function bulkReviewPendingLessons() {
+    const ids = [...new Set(selectedPendingLessonIds.map(String))].slice(0, 50);
+    if (!ids.length || !isReviewer) return;
+    const decision = hasPermission('publish') ? 'approve' : 'forward';
+    const label = decision === 'approve' ? 'خپرول' : 'عمومي اډمین ته لېږل';
+    Alert.alert('ډله‌ییز عمل', `ټاکل شوي ${ids.length} درسونه ${label} شي؟`, [
+      { text: 'نه', style: 'cancel' },
+      { text: 'هو', onPress: async () => {
+        setCloudflareBusy(true);
+        let completed = 0;
+        const failed = [];
+        try {
+          for (const lessonId of ids) {
+            try {
+              await workerAdminCall('reviewPendingLesson', { lessonId, decision });
+              completed += 1;
+            } catch (error) {
+              failed.push({ lessonId, message: error?.message || 'ناپېژندل شوې ستونزه' });
+            }
+          }
+          setSelectedPendingLessonIds([]);
+          await loadPendingLessons();
+          if (decision === 'approve' && completed) await syncAllPublishedLessons(true);
+          Alert.alert('ډله‌ییز عمل بشپړ شو', `${completed} درسونه ${decision === 'approve' ? 'خپور' : 'ولېږل'} شول.${failed.length ? ` ${failed.length} درسونه پاتې شول؛ د هر یوه ستونزه جلا وڅېړئ.` : ''}`);
+        } finally {
+          setCloudflareBusy(false);
+        }
+      }}
+    ]);
+  }
+
+  function togglePendingLessonSelection(id) {
+    const key = String(id);
+    setSelectedPendingLessonIds(old => old.includes(key) ? old.filter(value => value !== key) : [...old, key]);
   }
 
   function uploaderCanUseFolder(section, folder) {
@@ -1595,7 +1644,8 @@ export default function App() {
       const updated = {
         ...settings,
         ...(Object.keys(visualSettings).length ? visualSettings : {}),
-        ...(config.homeDesign ? { homeDesign: { ...(settings.homeDesign || {}), ...config.homeDesign } } : {})
+        ...(config.homeDesign ? { homeDesign: { ...(settings.homeDesign || {}), ...config.homeDesign } } : {}),
+        ...(typeof config.allowUserDesignSelection === 'boolean' ? { allowUserDesignSelection: config.allowUserDesignSelection } : {})
       };
       setSettings(updated);
       await saveData(STORAGE.settings, updated);
@@ -1612,39 +1662,47 @@ export default function App() {
     if (!loading) syncGlobalAppConfig();
   }, [loading]);
 
-  const homeDesign = { ...DEFAULT_HOME_DESIGN, ...(settings.homeDesign || {}) };
+  const canManageGlobalDesign = hasPermission('editSettings');
+  const canUsePersonalDesign = settings.allowUserDesignSelection === true && !canManageGlobalDesign;
+  const homeDesign = { ...DEFAULT_HOME_DESIGN, ...((canUsePersonalDesign && settings.personalHomeDesign) ? settings.personalHomeDesign : (settings.homeDesign || {})) };
 
   function getHomeFolderDesign(key) {
     return { ...homeDesign, ...(homeDesign.perFolder?.[key] || {}) };
   }
 
   async function updateHomeDesign(patch, folderKey = null) {
-    if (cloudflareUser && !hasPermission('editSettings')) {
-      Alert.alert('اجازه نشته', 'ستاسو حساب د عمومي ډیزاین د بدلولو اجازه نه لري.');
+    const personalMode = !canManageGlobalDesign && settings.allowUserDesignSelection === true;
+    if (!canManageGlobalDesign && !personalMode) {
+      Alert.alert('اجازه نشته', 'اوس مهال یوازې ستر اډمین د کتابتون ډیزاین بدلولای شي.');
       return;
     }
-    const current = { ...DEFAULT_HOME_DESIGN, ...(settings.homeDesign || {}) };
+    const storageKey = personalMode ? 'personalHomeDesign' : 'homeDesign';
+    const current = { ...DEFAULT_HOME_DESIGN, ...(settings[storageKey] || {}) };
     let next;
     if (folderKey) {
-      next = {
-        ...current,
-        perFolder: {
-          ...(current.perFolder || {}),
-          [folderKey]: { ...(current.perFolder?.[folderKey] || {}), ...patch }
-        }
-      };
-    } else {
-      next = { ...current, ...patch };
-    }
-    await updateSettings({ homeDesign: next });
-    if (cloudflareUser && hasPermission('editSettings')) {
+      next = { ...current, perFolder: { ...(current.perFolder || {}), [folderKey]: { ...(current.perFolder?.[folderKey] || {}), ...patch } } };
+    } else next = { ...current, ...patch };
+    await updateSettings({ [storageKey]: next });
+    if (!personalMode && cloudflareUser && canManageGlobalDesign) {
       try {
-        await setDoc(doc(db, 'appConfig', 'public'), {
-          homeDesign: next,
-          updatedBy: cloudflareUser.uid,
-          updatedAt: serverTimestamp()
-        }, { merge: true });
+        await setDoc(doc(db, 'appConfig', 'public'), { homeDesign: next, updatedBy: cloudflareUser.uid, updatedAt: serverTimestamp() }, { merge: true });
       } catch (error) { Alert.alert('د نړیوال ډیزاین ستونزه', 'ډیزاین په دې موبایل کې خوندي شو، خو نړیوال تنظیم ته ونه لېږل شو.'); }
+    }
+  }
+
+  async function applyLibraryDesignPreset(preset) {
+    await updateHomeDesign({ ...preset.values, presetId: preset.id });
+  }
+
+  async function updateUserDesignPermission(enabled) {
+    if (!canManageGlobalDesign || !cloudflareUser) return;
+    const next = !!enabled;
+    await updateSettings({ allowUserDesignSelection: next });
+    try {
+      await setDoc(doc(db, 'appConfig', 'public'), { allowUserDesignSelection: next, updatedBy: cloudflareUser.uid, updatedAt: serverTimestamp() }, { merge: true });
+      Alert.alert('ثبت شو', next ? 'کاروونکو ته د خپل ډیزاین د انتخاب اجازه ورکړل شوه.' : 'د کاروونکو شخصي ډیزاین بند شو؛ د ټولو لپاره د اډمین ټاکلی ډیزاین ښکاري.');
+    } catch (error) {
+      Alert.alert('ستونزه', 'اجازه په دې موبایل کې ثبت شوه، خو نړیوال تنظیم ته ونه لېږل شوه.');
     }
   }
 
@@ -3209,6 +3267,10 @@ export default function App() {
       const offlineUri = await getOfflineMediaUri(item.audio);
       const offlineCoverUri = await getOfflineMediaUri(`${item.audio}::cover`);
       if (offlineCoverUri) item = { ...item, audioCoverUri: offlineCoverUri };
+      const bundledBrandArtwork = Asset.fromModule(require('./assets/app-icon.png'));
+      if (!bundledBrandArtwork.localUri) { try { await bundledBrandArtwork.downloadAsync(); } catch (assetError) {} }
+      const trackCover = item.audioCoverUri || item.audioTracks?.find(track => track?.coverUri)?.coverUri || item.coverUri || settings.audioCoverImageUri || bundledBrandArtwork.localUri || bundledBrandArtwork.uri;
+      item = { ...item, audioCoverUri: trackCover };
       audioItemRef.current = item;
       const player = createAudioPlayer(offlineUri || item.audio, { updateInterval: 500, downloadFirst: false });
       audioSoundRef.current = player;
@@ -5709,6 +5771,20 @@ export default function App() {
     }
   }
 
+  const MANAGED_FOLDER_ICONS = ['folder-outline', 'book-outline', 'library-outline', 'school-outline', 'moon-outline', 'headset-outline', 'document-text-outline', 'albums-outline'];
+  function getManagedFolderIcon(section, folder, parent = '') {
+    const key = `${canonicalSection(section)}::${parent || ''}::${folder}`;
+    return folderAdmin.folderIcons?.[key] || 'folder-outline';
+  }
+  async function cycleManagedFolderIcon(section, folder, parent = '') {
+    if (!hasPermission('editContent')) { Alert.alert('اجازه نشته', 'د فولډر د نښې بدلولو اجازه نه لرئ.'); return; }
+    const key = `${canonicalSection(section)}::${parent || ''}::${folder}`;
+    const current = getManagedFolderIcon(section, folder, parent);
+    const index = MANAGED_FOLDER_ICONS.indexOf(current);
+    const nextIcon = MANAGED_FOLDER_ICONS[(index + 1) % MANAGED_FOLDER_ICONS.length];
+    await saveFolderAdmin({ ...folderAdmin, folderIcons: { ...(folderAdmin.folderIcons || {}), [key]: nextIcon } });
+  }
+
   async function addQuranExtraFolder() {
     const name = newAdminFolderName.trim();
     if (!name) { Alert.alert('خبرتیا', 'د فولډر نوم ولیکئ.'); return; }
@@ -6756,19 +6832,20 @@ export default function App() {
               const hasChildren = Array.isArray(folder.children) && folder.children.length > 0;
               return (
                 <React.Fragment key={folder.name}>
-                <View style={[styles.listCard, { flexDirection: 'column', alignItems: 'stretch' }]}>
+                <View style={[styles.listCard, { flexDirection: 'column', alignItems: 'stretch', backgroundColor: getHomeFolderDesign(`${selectedSection}::${folder.name}`).folderBackground, borderColor: getHomeFolderDesign(`${selectedSection}::${folder.name}`).folderBorderColor, borderWidth: getHomeFolderDesign(`${selectedSection}::${folder.name}`).folderBorderWidth, borderRadius: getHomeFolderDesign(`${selectedSection}::${folder.name}`).folderRadius }]}>
                   <TouchableOpacity style={{ flexDirection: 'row', alignItems: 'center', width: '100%', paddingBottom: 8 }} onPress={() => {
                     if (hasChildren) { setSelectedFolderParent(folder.name); setScreen('sectionSubFolders'); }
                     else openFolder(folder.name);
                   }}>
-                    <Ionicons name={hasChildren ? 'folder-open-outline' : ['book-outline','school-outline','library-outline','albums-outline','document-text-outline','bookmark-outline'][index % 6]} size={22} color={COLORS.gold} style={{ marginRight: 10 }} />
+                    <Ionicons name={getManagedFolderIcon(selectedSection, folder.name) !== 'folder-outline' ? getManagedFolderIcon(selectedSection, folder.name) : (hasChildren ? 'folder-open-outline' : ['book-outline','school-outline','library-outline','albums-outline','document-text-outline','bookmark-outline'][index % 6])} size={22} color={getHomeFolderDesign(`${selectedSection}::${folder.name}`).folderIconColor || COLORS.gold} style={{ marginRight: 10 }} />
                     <View style={{ flex: 1, minWidth: 0 }}>
-                      <Text style={[styles.listCardTitle, { color: settings.textColor }]} numberOfLines={2}>{folder.name}</Text>
+                      <Text style={[styles.listCardTitle, { color: getHomeFolderDesign(`${selectedSection}::${folder.name}`).folderTextColor || settings.textColor }]} numberOfLines={2}>{folder.name}</Text>
                       <Text style={styles.smallMuted}>{hasChildren ? `${folder.children.length} فرعي فولډرونه · ${count} مواد` : `${count} مواد`}</Text>
                     </View>
                   </TouchableOpacity>
                   <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', flexWrap: 'wrap', gap: 12, borderTopWidth: 1, borderTopColor: COLORS.border, paddingTop: 8 }}>
                     <TouchableOpacity onPress={() => { setSelectedFolder(folder.name); setSelectedFolderParent(''); setGeneralMaterialsScope('main'); setScreen('generalMaterials'); }}><Ionicons name="library-outline" size={19} color={COLORS.gold} /></TouchableOpacity>
+                    {hasPermission('editContent') ? <TouchableOpacity onPress={() => cycleManagedFolderIcon(selectedSection, folder.name)}><Ionicons name="color-palette-outline" size={19} color={COLORS.gold} /></TouchableOpacity> : null}
                     <TouchableOpacity onPress={() => moveAdminFolder(selectedSection, index, -1)}><Text style={styles.deleteIcon}>↑</Text></TouchableOpacity>
                     <TouchableOpacity onPress={() => moveAdminFolder(selectedSection, index, 1)}><Text style={styles.deleteIcon}>↓</Text></TouchableOpacity>
                     <TouchableOpacity onPress={() => { setSelectedFolderParent(folder.name); setScreen('sectionSubFolders'); }}><Ionicons name="folder-open-outline" size={19} color={COLORS.gold} /></TouchableOpacity>
@@ -6816,12 +6893,13 @@ export default function App() {
               : getOrderedSubFolders(selectedSection, selectedFolderParent)
             ).map((child, index) => (
               <React.Fragment key={child}>
-              <View style={[styles.listCard, { backgroundColor: homeDesign.subFolderBackground, borderColor: homeDesign.folderBorderColor, flexDirection: 'column', alignItems: 'stretch' }]}>
+              <View style={[styles.listCard, { backgroundColor: homeDesign.perFolder?.[`${selectedSection}::${selectedFolderParent}::${child}`]?.folderBackground || homeDesign.subFolderBackground, borderColor: homeDesign.perFolder?.[`${selectedSection}::${selectedFolderParent}::${child}`]?.folderBorderColor || homeDesign.folderBorderColor, borderWidth: homeDesign.perFolder?.[`${selectedSection}::${selectedFolderParent}::${child}`]?.folderBorderWidth ?? homeDesign.folderBorderWidth, borderRadius: homeDesign.perFolder?.[`${selectedSection}::${selectedFolderParent}::${child}`]?.folderRadius ?? homeDesign.folderRadius, flexDirection: 'column', alignItems: 'stretch' }]}>
                 <TouchableOpacity style={{ width: '100%', paddingBottom: 8 }} onPress={() => openFolder(child, selectedFolderParent)}>
-                  <Text style={[styles.listCardTitle, { color: homeDesign.subFolderTextColor || COLORS.goldLight, fontSize: homeDesign.subFolderTitleSize || 16 }]} numberOfLines={2}>{selectedFolderParent === 'اسماء او صفات' ? `${child} جل جلاله` : child}</Text>
+                  <View style={{ flexDirection: 'row-reverse', alignItems: 'center', gap: 8 }}><Ionicons name={getManagedFolderIcon(selectedSection, child, selectedFolderParent)} size={20} color={COLORS.gold} /><Text style={[styles.listCardTitle, { color: homeDesign.perFolder?.[`${selectedSection}::${selectedFolderParent}::${child}`]?.folderTextColor || homeDesign.subFolderTextColor || COLORS.goldLight, fontSize: homeDesign.subFolderTitleSize || 16, flex: 1 }]} numberOfLines={2}>{selectedFolderParent === 'اسماء او صفات' ? `${child} جل جلاله` : child}</Text></View>
                   <Text style={styles.smallMuted}>{getFolderItemCount({ name: child })} مواد</Text>
                 </TouchableOpacity>
                 <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', flexWrap: 'wrap', gap: 12, borderTopWidth: 1, borderTopColor: COLORS.border, paddingTop: 8 }}>
+                  {hasPermission('editContent') && selectedFolderParent !== 'اسماء او صفات' ? <TouchableOpacity onPress={() => cycleManagedFolderIcon(selectedSection, child, selectedFolderParent)}><Ionicons name="color-palette-outline" size={19} color={COLORS.gold} /></TouchableOpacity> : null}
                   <TouchableOpacity onPress={() => moveAdminFolder(selectedFolderParent === 'اسماء او صفات' ? 'allahNames' : `${selectedSection}::${selectedFolderParent}`, index, -1)}><Text style={styles.deleteIcon}>↑</Text></TouchableOpacity>
                   <TouchableOpacity onPress={() => moveAdminFolder(selectedFolderParent === 'اسماء او صفات' ? 'allahNames' : `${selectedSection}::${selectedFolderParent}`, index, 1)}><Text style={styles.deleteIcon}>↓</Text></TouchableOpacity>
                   {selectedFolderParent !== 'اسماء او صفات' ? <TouchableOpacity onPress={() => copyManagedFolder('child', child)}><Ionicons name="copy-outline" size={19} color={COLORS.gold} /></TouchableOpacity> : null}
@@ -6979,13 +7057,14 @@ export default function App() {
                 <Field textColor={settings.textColor} label="نوی فرعي فولډر" value={newSubFolderName} onChangeText={setNewSubFolderName} placeholder="د فرعي فولډر نوم" />
                 <GoldButton title="＋ فرعي فولډر اضافه کړئ" onPress={addSubFolder} />
                 {(getSectionFolders(selectedSection).find(row => row.name === selectedFolder)?.children || []).map((child, index) => (
-                  <View key={child} style={styles.lessonCard}>
+                  <View key={child} style={[styles.lessonCard, { backgroundColor: homeDesign.perFolder?.[`${selectedSection}::${selectedFolder}::${child}`]?.folderBackground || homeDesign.subFolderBackground, borderColor: homeDesign.perFolder?.[`${selectedSection}::${selectedFolder}::${child}`]?.folderBorderColor || homeDesign.folderBorderColor, borderWidth: homeDesign.perFolder?.[`${selectedSection}::${selectedFolder}::${child}`]?.folderBorderWidth ?? homeDesign.folderBorderWidth, borderRadius: homeDesign.perFolder?.[`${selectedSection}::${selectedFolder}::${child}`]?.folderRadius ?? homeDesign.folderRadius }]}>
                     <TouchableOpacity style={{ flex: 1, flexDirection: 'row-reverse', alignItems: 'center' }} onPress={() => openFolder(child, selectedFolder)}>
-                      <Ionicons name="folder-outline" size={20} color={COLORS.gold} />
-                      <Text style={[styles.lessonTitle, { flex: 1, marginRight: 8 }]}>{child}</Text>
+                      <Ionicons name={getManagedFolderIcon(selectedSection, child, selectedFolder)} size={20} color={COLORS.gold} />
+                      <Text style={[styles.lessonTitle, { flex: 1, marginRight: 8, color: homeDesign.perFolder?.[`${selectedSection}::${selectedFolder}::${child}`]?.folderTextColor || homeDesign.subFolderTextColor }]}>{child}</Text>
                     </TouchableOpacity>
                     <TouchableOpacity onPress={() => moveAdminFolder(`${selectedSection}::${selectedFolder}`, index, -1)}><Text style={styles.deleteIcon}>↑</Text></TouchableOpacity>
                     <TouchableOpacity onPress={() => moveAdminFolder(`${selectedSection}::${selectedFolder}`, index, 1)}><Text style={styles.deleteIcon}>↓</Text></TouchableOpacity>
+                    {hasPermission('editContent') ? <TouchableOpacity onPress={() => cycleManagedFolderIcon(selectedSection, child, selectedFolder)}><Ionicons name="color-palette-outline" size={19} color={COLORS.gold} /></TouchableOpacity> : null}
                     <TouchableOpacity onPress={() => copyManagedFolder('child', child)}><Ionicons name="copy-outline" size={19} color={COLORS.gold} /></TouchableOpacity>
                     <TouchableOpacity onPress={() => { setEditingFolderKey(`child:${child}`); setEditingFolderName(child); }}><Ionicons name="create-outline" size={19} color={COLORS.gold} /></TouchableOpacity>
                     <TouchableOpacity onPress={() => deleteManagedFolder('child', child)}><Ionicons name="trash-outline" size={19} color={COLORS.red} /></TouchableOpacity>
@@ -7143,7 +7222,7 @@ export default function App() {
               </View>
               <Text style={[styles.cardHeading, { color: settings.headingColor, marginTop: 8 }]}>اصلي فولډر وټاکئ</Text>
               <View style={{ flexDirection: 'row-reverse', flexWrap: 'wrap', gap: 7 }}>
-                {getSectionFolders(selectedSection).map(folder => <TouchableOpacity key={folder.name} onPress={() => { setSelectedFolder(folder.name); setSelectedFolderParent(''); setFormFolderParentChoice(''); setFormLinkedGeneralMaterialId(''); setFormLinkedAudioMaterialId(''); setFormLinkedPdfMaterialId(''); setFormLinkedAudioStartSeconds(''); setFormLinkedPdfPage(''); if (generalMaterialsScope) setGeneralMaterialsScope('main'); }} style={{ paddingVertical: 7, paddingHorizontal: 10, borderRadius: 9, borderWidth: 1, borderColor: selectedFolder === folder.name && !formFolderParentChoice ? COLORS.gold : COLORS.border, backgroundColor: selectedFolder === folder.name && !formFolderParentChoice ? COLORS.card2 : COLORS.card }}><Text style={{ color: COLORS.white }}>{folder.name}</Text></TouchableOpacity>)}
+                {getSectionFolders(selectedSection).map(folder => <TouchableOpacity key={folder.name} onPress={() => { setSelectedFolder(folder.name); setSelectedFolderParent(''); setFormFolderParentChoice(''); setFormLinkedGeneralMaterialId(''); setFormLinkedAudioMaterialId(''); setFormLinkedPdfMaterialId(''); setFormLinkedAudioStartSeconds(''); setFormLinkedPdfPage(''); if (generalMaterialsScope) setGeneralMaterialsScope('main'); }} style={{ paddingVertical: 7, paddingHorizontal: 10, borderRadius: 9, borderWidth: 1, borderColor: selectedFolder === folder.name && !formFolderParentChoice ? COLORS.gold : COLORS.border, backgroundColor: selectedFolder === folder.name && !formFolderParentChoice ? COLORS.card2 : COLORS.card, flexDirection: 'row-reverse', alignItems: 'center', gap: 6 }}><Ionicons name={getManagedFolderIcon(selectedSection, folder.name)} size={17} color={COLORS.gold} /><Text style={{ color: COLORS.white }}>{folder.name}</Text></TouchableOpacity>)}
               </View>
               {getSectionFolders(selectedSection).some(folder => (folder.children || []).length > 0) && <>
                 <Text style={[styles.cardHeading, { color: settings.headingColor, marginTop: 8 }]}>فرعي فولډر ته د موادو ټاکل</Text>
@@ -8362,6 +8441,14 @@ export default function App() {
                   <Text style={[styles.smallMuted, { marginTop: 8 }]}>که دا ایمیل د Cloudflare د BOOTSTRAP_ADMIN_EMAIL په توګه ټاکل شوی وي، دلته د ستر اډمین واک فعالولای شې.</Text>
                   <GoldButton title={cloudflareBusy ? 'اجازه ثبتېږي...' : '★ زما حساب د ستر اډمین په توګه فعال کړه'} onPress={bootstrapMySuperAdminAccess} />
                 </> : null}
+                {hasPermission('editSettings') ? <View style={{ marginTop: 10, paddingVertical: 9, borderTopWidth: 1, borderColor: COLORS.border }}>
+                  <Text style={[styles.cardHeading, { color: settings.headingColor }]}>د کاروونکو د ډیزاین واک</Text>
+                  <Text style={styles.smallMuted}>که فعال وي، هر کارن خپل ساده ډیزاین ټاکلای شي؛ که بند وي، د ستر اډمین ټاکلی ډیزاین ټولو ته ښکاري.</Text>
+                  <View style={styles.optionRow}>
+                    <Text style={[styles.optionText, { color: settings.textColor }]}>کاروونکو ته د ډیزاین انتخاب اجازه</Text>
+                    <Switch value={settings.allowUserDesignSelection === true} onValueChange={updateUserDesignPermission} trackColor={{ false: COLORS.border, true: COLORS.greenLight }} thumbColor={COLORS.gold} />
+                  </View>
+                </View> : null}
                 {hasPermission('manageLibrary') ? <>
                   <GoldButton title={cloudflareBusy ? 'مهرباني وکړئ انتظار...' : '⬆ عمومي کتابتون آنلاین ته پورته کول'} secondary onPress={uploadLibraryToCloudflare} />
                   <GoldButton title={cloudflareBusy ? 'مهرباني وکړئ انتظار...' : '⬇ له آنلاین کتابتون څخه بیا راوستل'} secondary onPress={restoreLibraryFromCloudflare} />
@@ -8403,16 +8490,29 @@ export default function App() {
                 </> : null}
                 {isReviewer ? <>
                   <Text style={[styles.cardHeading, { color: settings.headingColor, marginTop: 14 }]}>د کتنې په تمه درسونه ({pendingLessons.length})</Text>
-                  {pendingLessons.length ? pendingLessons.map(row => <View key={row.id} style={{ borderTopWidth: 1, borderColor: COLORS.border, paddingVertical: 9 }}>
-                    <Text style={{ color: COLORS.white, textAlign: 'right', fontWeight: 'bold' }}>{row.item?.title || 'بې نومه درس'}</Text>
-                    <Text style={styles.smallMuted}>{row.section || ''} / {row.folder || ''} · {row.status === 'admin_review' ? 'د عمومي اډمین وروستۍ کتنه' : 'د برخې لومړنۍ کتنه'}</Text>
-                    <View style={{ flexDirection: 'row-reverse', flexWrap: 'wrap', gap: 7, marginTop: 6 }}>
-                      {!hasPermission('publish') ? <GoldButton title="✓ عمومي اډمین ته ولېږه" onPress={() => reviewPendingLesson(row.id, 'forward')} /> : <>
-                        <GoldButton title="✓ تایید او خپرول" onPress={() => reviewPendingLesson(row.id, 'approve')} />
-                        <GoldButton title="ردول" secondary onPress={() => reviewPendingLesson(row.id, 'reject')} />
-                      </>}
+                  {pendingLessons.length ? <>
+                    <View style={{ flexDirection: 'row-reverse', flexWrap: 'wrap', gap: 7, marginVertical: 8 }}>
+                      <GoldButton title="لومړي ۵۰ ټول وټاکه" secondary onPress={() => setSelectedPendingLessonIds(pendingLessons.slice(0, 50).map(row => String(row.id)))} />
+                      <GoldButton title="ټول پاک کړه" secondary onPress={() => setSelectedPendingLessonIds([])} />
+                      <GoldButton title={`${selectedPendingLessonIds.length} ټاکل شوي – ${hasPermission('publish') ? 'په یو ځل خپرول' : 'په یو ځل لېږل'}`} onPress={bulkReviewPendingLessons} />
                     </View>
-                  </View>) : <Text style={styles.smallMuted}>اوس مهال د کتنې په تمه درس نشته.</Text>}
+                    {pendingLessons.map(row => {
+                      const selected = selectedPendingLessonIds.includes(String(row.id));
+                      return <View key={row.id} style={{ borderTopWidth: 1, borderColor: COLORS.border, paddingVertical: 9 }}>
+                        <TouchableOpacity onPress={() => togglePendingLessonSelection(row.id)} style={{ flexDirection: 'row-reverse', alignItems: 'center', gap: 9 }}>
+                          <Ionicons name={selected ? 'checkbox' : 'square-outline'} size={23} color={selected ? COLORS.gold : COLORS.muted} />
+                          <Text style={{ color: COLORS.white, textAlign: 'right', fontWeight: 'bold', flex: 1 }}>{row.item?.title || 'بې نومه درس'}</Text>
+                        </TouchableOpacity>
+                        <Text style={styles.smallMuted}>{row.section || ''} / {row.folder || ''} · {row.status === 'admin_review' ? 'د عمومي اډمین وروستۍ کتنه' : 'د برخې لومړنۍ کتنه'}</Text>
+                        <View style={{ flexDirection: 'row-reverse', flexWrap: 'wrap', gap: 7, marginTop: 6 }}>
+                          {!hasPermission('publish') ? <GoldButton title="✓ عمومي اډمین ته ولېږه" onPress={() => reviewPendingLesson(row.id, 'forward')} /> : <>
+                            <GoldButton title="✓ تایید او خپرول" onPress={() => reviewPendingLesson(row.id, 'approve')} />
+                            <GoldButton title="ردول" secondary onPress={() => reviewPendingLesson(row.id, 'reject')} />
+                          </>}
+                        </View>
+                      </View>;
+                    })}
+                  </> : <Text style={styles.smallMuted}>اوس مهال د کتنې په تمه درس نشته.</Text>}
                   <GoldButton title="د کتنې لېست تازه کړه" secondary onPress={loadPendingLessons} />
                 </> : null}
                 {hasPermission('viewAudit') ? <View style={{ marginTop: 12, borderTopWidth: 1, borderColor: COLORS.border, paddingTop: 10 }}>
@@ -8589,7 +8689,27 @@ export default function App() {
             <PageHeader title={t("د کورپاڼې ډیزاین")} subtitle={t("ټول رنګونه او فولډرونه په خپل اختیار برابر کړئ")} onBack={() => setScreen('settings')} />
 
             <View style={styles.formCard}>
-              <Text style={[styles.cardHeading, { color: settings.headingColor }]}>دروس المشایخ – د نومونو تنظیم</Text>
+              <Text style={[styles.cardHeading, { color: settings.headingColor }]}>د کتابتون ساده چمتو ډیزاینونه</Text>
+              <Text style={styles.smallMuted}>{canManageGlobalDesign ? 'د ستر اډمین انتخاب به ټولو کاروونکو ته ښکاره شي، مګر که د کاروونکو شخصي انتخاب فعال وي.' : (settings.allowUserDesignSelection ? 'دا ډیزاین یوازې ستا په موبایل/حساب کې بدلېږي.' : 'د ډیزاین انتخاب یوازې د ستر اډمین له خوا کېږي.')}</Text>
+              <View style={{ flexDirection: 'row-reverse', flexWrap: 'wrap', gap: 8 }}>
+                {LIBRARY_DESIGN_PRESETS.map(preset => <TouchableOpacity key={preset.id} disabled={!canManageGlobalDesign && !canUsePersonalDesign} onPress={() => applyLibraryDesignPreset(preset)} style={{ minWidth: '30%', flexGrow: 1, padding: 12, borderRadius: 10, backgroundColor: preset.values.folderBackground, borderWidth: homeDesign.presetId === preset.id ? 3 : 1, borderColor: homeDesign.presetId === preset.id ? COLORS.gold : COLORS.border }}>
+                  <Text style={{ color: preset.values.folderTextColor, textAlign: 'center', fontWeight: 'bold' }}>{preset.name}</Text>
+                  <Text style={{ color: preset.values.folderIconColor, textAlign: 'center', marginTop: 4 }}>▰ ▰ ▰</Text>
+                </TouchableOpacity>)}
+              </View>
+              <Text style={[styles.cardHeading, { color: settings.headingColor, marginTop: 14 }]}>د ځانګړي فولډر جلا ډیزاین</Text>
+              <Text style={styles.smallMuted}>لومړی علمي برخه، بیا فولډر او که وغواړې فرعي فولډر وټاکه.</Text>
+              <View style={{ flexDirection: 'row-reverse', flexWrap: 'wrap', gap: 6 }}>
+                {SECTIONS.map(section => <TouchableOpacity key={section} onPress={() => { setDesignSectionChoice(section); setDesignRootFolderChoice(''); setDesignFolderKey(`${section}::`); }} style={[styles.designChoice, designSectionChoice === section && styles.designChoiceActive]}><Text style={styles.designChoiceText}>{section}</Text></TouchableOpacity>)}
+              </View>
+              <View style={{ flexDirection: 'row-reverse', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
+                {getSectionFolders(designSectionChoice).map(folder => <TouchableOpacity key={folder.name} onPress={() => { setDesignRootFolderChoice(folder.name); setDesignFolderKey(`${designSectionChoice}::${folder.name}`); }} style={[styles.designChoice, designRootFolderChoice === folder.name && styles.designChoiceActive]}><Text style={styles.designChoiceText}>{folder.name}</Text></TouchableOpacity>)}
+              </View>
+              {designRootFolderChoice && (getSectionFolders(designSectionChoice).find(folder => folder.name === designRootFolderChoice)?.children || []).length ? <View style={{ flexDirection: 'row-reverse', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
+                {(getSectionFolders(designSectionChoice).find(folder => folder.name === designRootFolderChoice)?.children || []).map(child => <TouchableOpacity key={child} onPress={() => setDesignFolderKey(`${designSectionChoice}::${designRootFolderChoice}::${child}`)} style={[styles.designChoice, designFolderKey === `${designSectionChoice}::${designRootFolderChoice}::${child}` && styles.designChoiceActive]}><Text style={styles.designChoiceText}>{child}</Text></TouchableOpacity>)}
+              </View> : null}
+              <Text style={styles.smallMuted}>ټاکل شوی فولډر: {designFolderKey}</Text>
+              <Text style={[styles.cardHeading, { color: settings.headingColor, marginTop: 14 }]}>دروس المشایخ – د نومونو تنظیم</Text>
               <Field textColor={settings.textColor} label="د فولډر نوم" value={homeDesign.scholarsTitle || 'دروس المشایخ'} onChangeText={value => updateHomeDesign({ scholarsTitle: value })} placeholder="د فولډر نوم" />
               <Field textColor={settings.textColor} label="لاندې فرعي عنوان" value={homeDesign.scholarsSubtitle || 'د علماوو او مشایخو علمي درسونه'} onChangeText={value => updateHomeDesign({ scholarsSubtitle: value })} placeholder="فرعي عنوان" />
               <Field textColor={settings.textColor} label="د اپلېکېشن اصلي سرلیک" value={homeDesign.appTitle || 'میراث اسلام'} onChangeText={value => updateHomeDesign({ appTitle: value })} placeholder="میراث اسلام" />

@@ -49,7 +49,8 @@ module.exports = ({ config }) => {
     [
       "@config-plugins/react-native-blob-util",
       "@config-plugins/react-native-pdf",
-      "react-native-zip-archive"
+      "react-native-zip-archive",
+      ["expo-audio", { "enableBackgroundPlayback": true }]
     ]
   );
 };
