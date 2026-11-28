@@ -45,6 +45,13 @@ jobs:
 
           echo "Cloudflare secrets are configured."
 
+      - name: Apply D1 schema
+        working-directory: worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: wrangler d1 execute mirath-islam-db --remote --file=./schema.sql
+
       - name: Deploy Cloudflare Worker
         working-directory: worker
         env:
