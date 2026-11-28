@@ -1,0 +1,13 @@
+ 
+name = "islamic-university-storage"
+main = "index.js"
+compatibility_date = "2026-11-28"
+
+[[r2_buckets]]
+binding = "MY_BUCKET"
+bucket_name = "islamic-university-files"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "mirath-islam-db"
+database_id = "13d831c0-568a-422f-b343-ed3a7ddc35f7"
