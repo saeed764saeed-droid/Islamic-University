@@ -24,14 +24,7 @@ async function api(path, options = {}) {
   if (options.body && !(typeof Blob !== 'undefined' && options.body instanceof Blob)) headers['Content-Type'] = 'application/json';
   const response = await fetch(`${API_BASE_URL}${path}`, { ...options, headers });
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    const raw = String(data.error || data.message || '');
-    // Hide implementation details if an older Worker deployment still returns raw crypto errors.
-    if (/pbkdf2|iteration counts|derivebits|subtlecrypto|internal error/i.test(raw)) {
-      throw new Error('د حسابونو خدمت کې تخنیکي ستونزه ده. مهرباني وکړئ لږ وروسته بیا هڅه وکړئ.');
-    }
-    throw new Error(raw || 'غوښتنه بشپړه نه شوه. بیا هڅه وکړئ.');
-  }
+  if (!response.ok) throw new Error(data.error || data.message || `Server error ${response.status}`);
   return data;
 }
 function notify() { listeners.forEach(fn => { try { fn(currentUser); } catch (_) {} }); }
