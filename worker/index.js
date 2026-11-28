@@ -1,514 +1,61 @@
-const PROJECT_ID = 'islamic-university-27d8f';
-const MAX_FILE_SIZE = 100 * 1024 * 1024;
-const FIREBASE_KEYS_URL = 'https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com';
-let cachedKeys = null;
-let keysExpiry = 0;
-function json(data, status = 200, extraHeaders = {}) {
-  return new Response(JSON.stringify(data), { status, headers: {
-    'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*',
-    'Cache-Control': 'no-store', ...extraHeaders
-  }});
-}
-function cors() { return new Response(null, { status: 204, headers: {
-  'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET, HEAD, PUT, POST, DELETE, OPTIONS',
-  'Access-Control-Allow-Headers': 'Authorization, Content-Type, Range, X-File-Size',
-  'Access-Control-Expose-Headers': 'Content-Length, Content-Range, Accept-Ranges'
-}}); }
-function decodeBase64Url(value) {
-  const normalized = value.replace(/-/g, '+').replace(/_/g, '/');
-  const binary = atob(normalized + '='.repeat((4 - normalized.length % 4) % 4));
-  return Uint8Array.from(binary, c => c.charCodeAt(0));
-}
-function decodeJsonPart(value) { return JSON.parse(new TextDecoder().decode(decodeBase64Url(value))); }
-async function getFirebaseKeys() {
-  if (cachedKeys && Date.now() < keysExpiry) return cachedKeys;
-  const response = await fetch(FIREBASE_KEYS_URL);
-  if (!response.ok) throw new Error('Firebase verification keys unavailable');
-  cachedKeys = (await response.json()).keys || [];
-  keysExpiry = Date.now() + 50 * 60 * 1000;
-  return cachedKeys;
-}
-async function verifyFirebaseToken(token) {
-  const parts = token.split('.');
-  if (parts.length !== 3) throw new Error('Invalid token');
-  const header = decodeJsonPart(parts[0]);
-  const payload = decodeJsonPart(parts[1]);
-  const now = Math.floor(Date.now() / 1000);
-  if (header.alg !== 'RS256' || !header.kid || payload.aud !== PROJECT_ID ||
-      payload.iss !== `https://securetoken.google.com/${PROJECT_ID}` || !payload.sub ||
-      payload.exp <= now || payload.iat > now || payload.auth_time > now) throw new Error('Invalid token claims');
-  const jwk = (await getFirebaseKeys()).find(key => key.kid === header.kid);
-  if (!jwk) throw new Error('Unknown signing key');
-  const publicKey = await crypto.subtle.importKey('jwk', jwk,
-    { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['verify']);
-  const valid = await crypto.subtle.verify('RSASSA-PKCS1-v1_5', publicKey,
-    decodeBase64Url(parts[2]), new TextEncoder().encode(`${parts[0]}.${parts[1]}`));
-  if (!valid) throw new Error('Invalid token signature');
-  return payload;
-}
-function firestoreValue(fields, name) {
-  const v = fields?.[name];
-  if (!v) return undefined;
-  return v.stringValue ?? v.integerValue ?? v.booleanValue ?? v.doubleValue;
-}
-async function getFirestoreDocument(path, token) {
-  const url = `https://firestore.googleapis.com/v1/projects/${PROJECT_ID}/databases/(default)/documents/${path}`;
-  const response = await fetch(url, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
-  if (!response.ok) return null;
-  return (await response.json()).fields || null;
-}
-function bearer(request) {
-  const m = (request.headers.get('Authorization') || '').match(/^Bearer\s+(.+)$/i);
-  return m ? m[1] : null;
-}
-async function authenticate(request) {
-  const token = bearer(request);
-  if (!token) return { error: json({ error: 'Authentication required' }, 401) };
-  try { return { token, user: await verifyFirebaseToken(token) }; }
-  catch { return { error: json({ error: 'Invalid Firebase authentication' }, 401) }; }
-}
-function validPath(path, uid, id) {
-  return typeof path === 'string' && path.startsWith(`pending/${uid}/${id}/`) &&
-    !path.includes('..') && !path.includes('\\') && path.length < 700;
-}
-async function uploadMedia(request, env, id) {
-  if (!/^[A-Za-z0-9_-]{1,160}$/.test(id)) return json({ error: 'Invalid media id' }, 400);
-  const a = await authenticate(request); if (a.error) return a.error;
-  const fields = await getFirestoreDocument(`mediaAssets/${encodeURIComponent(id)}`, a.token);
-  if (!fields) return json({ error: 'Media record not found' }, 404);
-  const owner = firestoreValue(fields, 'ownerUid');
-  const status = firestoreValue(fields, 'status');
-  const provider = firestoreValue(fields, 'storageProvider');
-  const path = firestoreValue(fields, 'storagePath');
-  if (owner !== a.user.sub || status !== 'pending' || provider !== 'cloudflare-r2' || !validPath(path, a.user.sub, id)) return json({ error: 'Upload not permitted' }, 403);
-  const size = Number(request.headers.get('X-File-Size') || request.headers.get('Content-Length') || 0);
-  if (!Number.isSafeInteger(size) || size <= 0) return json({ error: 'Valid file size is required' }, 411);
-  if (size > MAX_FILE_SIZE) return json({ error: 'File exceeds 100 MB limit' }, 413);
-  if (!request.body) return json({ error: 'Upload body is empty' }, 400);
-  // Pass the original request stream directly to R2. Wrapping it in TransformStream
-  // can remove the stream's known-length metadata and cause R2.put() to fail.
-  // The client-declared size is validated above; the upload endpoint is capped at 100 MB.
-  try {
-    if (!env.MY_BUCKET || typeof env.MY_BUCKET.put !== 'function') {
-      throw new Error('R2 binding MY_BUCKET is missing from this Worker deployment');
-    }
-    await env.MY_BUCKET.put(path, request.body, {
-      httpMetadata: { contentType: request.headers.get('Content-Type') || 'application/octet-stream', cacheControl: 'private, no-store' },
-      customMetadata: { mediaId: id, ownerUid: a.user.sub, status: 'pending', declaredSize: String(size) }
-    });
-    return json({ success: true, mediaId: id, status: 'pending', size });
-  } catch (e) {
-    const detail = String(e?.message || e || 'Unknown R2 error').slice(0, 300);
-    console.error('R2 upload failed', { mediaId: id, path, declaredSize: size, detail });
-    return json({ error: 'R2 upload failed', detail }, 500);
-  }
-}
-function parseRange(value, size) {
-  const m = /^bytes=(\d*)-(\d*)$/.exec(value || ''); if (!m) return null;
-  let start, end;
-  if (m[1] === '') { const suffix = Number(m[2]); if (!suffix) return null; start = Math.max(0, size - suffix); end = size - 1; }
-  else { start = Number(m[1]); end = m[2] ? Number(m[2]) : size - 1; }
-  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end < start || start >= size) return null;
-  end = Math.min(end, size - 1); return { start, end, length: end - start + 1 };
-}
-async function serveMedia(request, env, id) {
-  if (!/^[A-Za-z0-9_-]{1,160}$/.test(id)) return json({ error: 'Invalid media id' }, 400);
-  // د تایید شوو mediaAssets اسناد په Firestore Rules کې عام لوستلو ته اجازه لري.
-  // نو عام اورېدونکي/لوستونکي د Service Account Secret ته اړتیا نه لري.
-  let fields;
-  try {
-    fields = await getFirestoreDocument(`mediaAssets/${encodeURIComponent(id)}`, null);
-  } catch (error) {
-    console.error('Public media metadata lookup failed', { mediaId: id, message: String(error?.message || error).slice(0, 240) });
-    return json({ error: 'د فایل معلومات اوس نه شي لوستل کېدای؛ لږ وروسته بیا هڅه وکړئ.' }, 503);
-  }
-  if (!fields) return json({ error: 'Media not found' }, 404);
-  const status = firestoreValue(fields, 'status');
-  const provider = firestoreValue(fields, 'storageProvider');
-  const path = firestoreValue(fields, 'storagePath');
-  const owner = firestoreValue(fields, 'ownerUid');
-  if (status !== 'approved' || provider !== 'cloudflare-r2' || !validPath(path, owner, id)) return json({ error: 'Media is not approved' }, 403);
-  const object = await env.MY_BUCKET.head(path);
-  if (!object) return json({ error: 'File not found' }, 404);
-  const headers = new Headers(); object.writeHttpMetadata(headers);
-  headers.set('Accept-Ranges', 'bytes'); headers.set('Access-Control-Allow-Origin', '*');
-  headers.set('Cache-Control', 'public, max-age=300'); headers.set('Content-Length', String(object.size));
-  if (request.method === 'HEAD') return new Response(null, { status: 200, headers });
-  const rangeHeader = request.headers.get('Range');
-  if (rangeHeader) {
-    const r = parseRange(rangeHeader, object.size);
-    if (!r) { headers.set('Content-Range', `bytes */${object.size}`); return new Response(null, { status: 416, headers }); }
-    const part = await env.MY_BUCKET.get(path, { range: { offset: r.start, length: r.length } });
-    if (!part) return json({ error: 'File not found' }, 404);
-    headers.set('Content-Range', `bytes ${r.start}-${r.end}/${object.size}`); headers.set('Content-Length', String(r.length));
-    return new Response(part.body, { status: 206, headers });
-  }
-  const full = await env.MY_BUCKET.get(path);
-  return full ? new Response(full.body, { status: 200, headers }) : json({ error: 'File not found' }, 404);
-}
-async function deleteMedia(request, env, id) {
-  if (!/^[A-Za-z0-9_-]{1,160}$/.test(id)) return json({ error: 'Invalid media id' }, 400);
-  const a = await authenticate(request); if (a.error) return a.error;
-  const fields = await getFirestoreDocument(`mediaAssets/${encodeURIComponent(id)}`, a.token);
-  if (!fields) return json({ error: 'Media record not found' }, 404);
-  const owner = firestoreValue(fields, 'ownerUid');
-  const status = firestoreValue(fields, 'status');
-  const provider = firestoreValue(fields, 'storageProvider');
-  const path = firestoreValue(fields, 'storagePath');
-  if (provider !== 'cloudflare-r2' || !validPath(path, owner, id)) return json({ error: 'Invalid media path' }, 400);
-  const roleDoc = await getFirestoreDocument(`userRoles/${encodeURIComponent(a.user.sub)}`, a.token);
-  const role = firestoreValue(roleDoc, 'role');
-  const active = firestoreValue(roleDoc, 'active');
-  const globalAdmin = (active === true || (role === 'superadmin' && active !== false)) && ['superadmin', 'admin'].includes(role);
-  const allowed = (owner === a.user.sub && status === 'pending') || (globalAdmin && status === 'rejected');
-  if (!allowed) return json({ error: 'Delete not permitted' }, 403);
-  try { await env.MY_BUCKET.delete(path); return json({ success: true, mediaId: id, deleted: true }); }
-  catch (e) { return json({ error: 'R2 delete failed', detail: String(e?.message || '').slice(0, 180) }, 500); }
-}
-
-// ---------- Secure Firebase Admin REST bridge (no Firebase Functions / Blaze required) ----------
-const FIRESTORE_BASE = `https://firestore.googleapis.com/v1/projects/${PROJECT_ID}/databases/(default)/documents`;
-let serviceTokenCache = null;
-let serviceTokenExpiry = 0;
-const enc = new TextEncoder();
-function b64url(bytes) {
-  let binary = '';
-  for (const b of bytes) binary += String.fromCharCode(b);
-  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
-}
-function readServiceAccount(env) {
-  const raw = typeof env.FIREBASE_SERVICE_ACCOUNT === 'string'
-    ? env.FIREBASE_SERVICE_ACCOUNT.trim()
-    : '';
-  if (!raw) {
-    throw new Error('FIREBASE_SERVICE_ACCOUNT is missing from this Worker environment');
-  }
-
-  let sa;
-  try {
-    sa = JSON.parse(raw);
-  } catch {
-    throw new Error('FIREBASE_SERVICE_ACCOUNT must contain the complete valid Service Account JSON');
-  }
-
-  const privateKey = String(sa.private_key || '').replace(/\\n/g, '\n').trim();
-  if (!sa.client_email || !privateKey || sa.project_id !== PROJECT_ID) {
-    throw new Error('Firebase Service Account project_id, client_email, or private_key is missing/mismatched');
-  }
-  if (!privateKey.includes('-----BEGIN PRIVATE KEY-----') ||
-      !privateKey.includes('-----END PRIVATE KEY-----')) {
-    throw new Error('Firebase Service Account private_key is not a valid PEM private key');
-  }
-  return { ...sa, private_key: privateKey };
-}
-function inspectServiceAccount(env) {
-  const raw = typeof env.FIREBASE_SERVICE_ACCOUNT === 'string'
-    ? env.FIREBASE_SERVICE_ACCOUNT.trim()
-    : '';
-  if (!raw) return { configured: false, validJson: false, projectMatches: false, hasClientEmail: false, hasPrivateKey: false, privateKeyDecodes: false };
-  try {
-    const sa = JSON.parse(raw);
-    const key = String(sa.private_key || '').replace(/\\n/g, '\n');
-    let privateKeyDecodes = false;
-    try { pemBytes(key); privateKeyDecodes = true; } catch {}
-    return {
-      configured: true,
-      validJson: true,
-      projectMatches: sa.project_id === PROJECT_ID,
-      hasClientEmail: Boolean(sa.client_email),
-      hasPrivateKey: key.includes('-----BEGIN PRIVATE KEY-----') && key.includes('-----END PRIVATE KEY-----'),
-      privateKeyDecodes
-    };
-  } catch {
-    return { configured: true, validJson: false, projectMatches: false, hasClientEmail: false, hasPrivateKey: false, privateKeyDecodes: false };
-  }
-}
-function pemBytes(pem) {
-  // PKCS#8 PEM body is standard Base64, not Base64URL.
-  const body = String(pem)
-    .replace(/-----BEGIN PRIVATE KEY-----|-----END PRIVATE KEY-----/g, '')
-    .replace(/\s+/g, '');
-  if (!body || !/^[A-Za-z0-9+/]+=*$/.test(body)) {
-    throw new Error('Service Account private_key PEM body is not valid Base64');
-  }
-  const binary = atob(body);
-  return Uint8Array.from(binary, c => c.charCodeAt(0));
-}
-
-async function getServiceAccessToken(env) {
-  if (serviceTokenCache && Date.now() < serviceTokenExpiry - 60000) return serviceTokenCache;
-  const sa = readServiceAccount(env);
-  const now = Math.floor(Date.now() / 1000);
-  const head = b64url(enc.encode(JSON.stringify({ alg: 'RS256', typ: 'JWT' })));
-  const claim = b64url(enc.encode(JSON.stringify({ iss: sa.client_email, scope: 'https://www.googleapis.com/auth/datastore https://www.googleapis.com/auth/identitytoolkit', aud: sa.token_uri || 'https://oauth2.googleapis.com/token', iat: now, exp: now + 3600 })));
-  const unsigned = `${head}.${claim}`;
-  const key = await crypto.subtle.importKey('pkcs8', pemBytes(sa.private_key), { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['sign']);
-  const sig = await crypto.subtle.sign('RSASSA-PKCS1-v1_5', key, enc.encode(unsigned));
-  const assertion = `${unsigned}.${b64url(new Uint8Array(sig))}`;
-  const response = await fetch(sa.token_uri || 'https://oauth2.googleapis.com/token', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer', assertion }) });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok || !data.access_token) throw new Error(`Google OAuth token exchange failed (${response.status})`);
-  serviceTokenCache = data.access_token; serviceTokenExpiry = Date.now() + Number(data.expires_in || 3600) * 1000;
-  return serviceTokenCache;
-}
-function fromFs(v) {
-  if (!v || typeof v !== 'object') return v;
-  if ('stringValue' in v) return v.stringValue;
-  if ('integerValue' in v) return Number(v.integerValue);
-  if ('doubleValue' in v) return v.doubleValue;
-  if ('booleanValue' in v) return v.booleanValue;
-  if ('nullValue' in v) return null;
-  if ('timestampValue' in v) return v.timestampValue;
-  if ('arrayValue' in v) return (v.arrayValue.values || []).map(fromFs);
-  if ('mapValue' in v) return fromFields(v.mapValue.fields || {});
-  if ('referenceValue' in v) return v.referenceValue;
-  return v;
-}
-function fromFields(fields = {}) { return Object.fromEntries(Object.entries(fields).map(([k,v]) => [k, fromFs(v)])); }
-function toFs(v) {
-  if (v === null) return { nullValue: null };
-  if (typeof v === 'string') return { stringValue: v };
-  if (typeof v === 'boolean') return { booleanValue: v };
-  if (typeof v === 'number') return Number.isInteger(v) ? { integerValue: String(v) } : { doubleValue: v };
-  if (Array.isArray(v)) return { arrayValue: { values: v.map(toFs) } };
-  if (v && typeof v === 'object') return { mapValue: { fields: Object.fromEntries(Object.entries(v).map(([k,x]) => [k,toFs(x)])) } };
-  return { nullValue: null };
-}
-async function fsRequest(env, path, options = {}) {
-  const token = await getServiceAccessToken(env);
-  const response = await fetch(`${FIRESTORE_BASE}${path}`, { ...options, headers: { Authorization: `Bearer ${token}`, ...(options.body ? { 'Content-Type': 'application/json' } : {}), ...(options.headers || {}) } });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) { const msg = data?.error?.message || `Firestore request failed (${response.status})`; const e = new Error(msg); e.status = response.status; throw e; }
-  return data;
-}
-async function adminGet(env, collectionName, id) {
-  try { const d = await fsRequest(env, `/${collectionName}/${encodeURIComponent(id)}`); return { name: d.name, fields: fromFields(d.fields || {}) }; }
-  catch (e) { if (e.status === 404) return null; throw e; }
-}
-async function adminList(env, collectionName, limit = 500, orderField = null) {
-  const body = { structuredQuery: { from: [{ collectionId: collectionName }], ...(orderField ? { orderBy: [{ field: { fieldPath: orderField }, direction: 'ASCENDING' }] } : {}), limit } };
-  const rows = await fsRequest(env, ':runQuery', { method: 'POST', body: JSON.stringify(body) });
-  return (Array.isArray(rows) ? rows : []).filter(x => x.document).map(x => ({ id: x.document.name.split('/').pop(), fields: fromFields(x.document.fields || {}) }));
-}
-async function commitWrites(env, writes) {
-  if (!writes.length) return;
-  await fsRequest(env, ':commit', { method: 'POST', body: JSON.stringify({ writes }) });
-}
-function fsDoc(collectionName, id, fields) {
-  // Firestore Write.update.document.name must be a resource name, not an HTTP URL.
-  const resourceName = `projects/${PROJECT_ID}/databases/(default)/documents/${collectionName}/${encodeURIComponent(id)}`;
-  return { name: resourceName, fields: Object.fromEntries(Object.entries(fields).map(([k, v]) => [k, toFs(v)])) };
-}
-function updateWrite(collectionName, id, fields, transforms = []) {
-  return { update: fsDoc(collectionName,id,fields), updateMask: { fieldPaths: Object.keys(fields) }, ...(transforms.length ? { updateTransforms: transforms } : {}) };
-}
-function serverTimestampTransform(fieldPath) { return { fieldPath, setToServerValue: 'REQUEST_TIME' }; }
-function activeRole(row) { return row?.active === true || (row?.role === 'superadmin' && row?.active !== false); }
-const ADMIN_DEFAULTS = { superadmin: ['upload','createContent','editContent','deleteContent','publish','manageUsers','manageLibrary','editSettings','viewAudit','review'], admin: ['upload','createContent','editContent','deleteContent','publish','manageLibrary','editSettings','viewAudit','review'], sectionAdmin: ['upload','createContent','editContent','review'], uploader: ['upload','createContent'], user: [] };
-function hasAdminPermission(data, permission) {
-  if (data.role === 'superadmin') return true;
-  if (data.permissions && Object.prototype.hasOwnProperty.call(data.permissions, permission)) return data.permissions[permission] === true;
-  return (ADMIN_DEFAULTS[data.role] || []).includes(permission);
-}
-async function getAdminActor(request, env) {
-  const a = await authenticate(request); if (a.error) return { error: a.error };
-  const row = await adminGet(env, 'userRoles', a.user.sub);
-  if (!row || !activeRole(row.fields)) return { error: json({ error: 'دا حساب فعال اداري واک نه لري.' }, 403) };
-  return { uid: a.user.sub, data: row.fields };
-}
-async function adminApi(request, env, action) {
-  const actor = await getAdminActor(request, env); if (actor.error) return actor.error;
-  const role = actor.data.role;
-  const body = request.method === 'POST' ? await request.json().catch(() => ({})) : {};
-  if (action === 'listPendingLessons') {
-    if (!hasAdminPermission(actor.data, 'review')) return json({ error: 'د درسونو د کتنې اجازه نشته.' },403);
-    const global = ['superadmin','admin'].includes(role), sections = Array.isArray(actor.data.sectionKeys) ? actor.data.sectionKeys : [];
-    if (!global && !sections.length) return json({ lessons: [] });
-    const rows = await adminList(env,'pendingLessons',500);
-    const lessons = rows.map(r => ({ id:r.id, item:r.fields.item || {}, ownerUid:r.fields.ownerUid || '', section:r.fields.section || '', folder:r.fields.folder || '', scopeKey:r.fields.scopeKey || '', status:r.fields.status || '', mediaIds:Array.isArray(r.fields.mediaIds)?r.fields.mediaIds:[], updatedAt:r.fields.updatedAt || null }))
-      .filter(r => ['pending','admin_review'].includes(r.status) && (global || (r.status === 'pending' && sections.includes(r.section))))
-      .sort((a,b)=>String(b.updatedAt||'').localeCompare(String(a.updatedAt||'')));
-    return json({ lessons });
-  }
-  if (action === 'listUserRoles') {
-    if (role !== 'superadmin') return json({ error: 'د ټولو حسابونو لېست یوازې ستر اډمین لیدلی شي.' },403);
-    const rows = await adminList(env,'userRoles',500,'email');
-    return json({ users: rows.map(r=>({ uid:r.id,email:r.fields.email||'',role:r.fields.role||'user',active:activeRole(r.fields),sectionKeys:Array.isArray(r.fields.sectionKeys)?r.fields.sectionKeys:[],folderKeys:Array.isArray(r.fields.folderKeys)?r.fields.folderKeys:[],permissions:r.fields.permissions&&typeof r.fields.permissions==='object'?r.fields.permissions:{},updatedAt:r.fields.updatedAt||null })) });
-  }
-  if (action === 'setUserRoleStatus') {
-    if (role !== 'superadmin') return json({ error:'د حسابونو فعالول او بندول یوازې ستر اډمین کولی شي.' },403);
-    const uid=String(body.uid||'').trim(), active=body.active;
-    if (!uid || typeof active !== 'boolean') return json({ error:'UID او فعال/غیرفعال حالت اړین دی.' },400);
-    const target=await adminGet(env,'userRoles',uid); if (!target) return json({error:'اداري حساب ونه موندل شو.'},404);
-    if (target.fields.role==='superadmin' && active===false) {
-      const all=await adminList(env,'userRoles',500); const count=all.filter(x=>x.fields.role==='superadmin' && activeRole(x.fields)).length;
-      if (count<=1) return json({error:'وروستی فعال ستر اډمین نه شي بندېدای.'},409);
-    }
-    await commitWrites(env,[updateWrite('userRoles',uid,{active,updatedBy:actor.uid},[serverTimestampTransform('updatedAt')]), {update:fsDoc('auditLogs',`log_${Date.now()}_${crypto.randomUUID().slice(0,8)}`,{actorUid:actor.uid,action:active?'account_activated':'account_deactivated',target:uid,details:{email:target.fields.email||'',role:target.fields.role||''}}),updateTransforms:[serverTimestampTransform('createdAt')]}]);
-    return json({success:true,uid,active});
-  }
-  if (action === 'setUserRoleByEmail') {
-    if (role !== 'superadmin') return json({error:'د رول ټاکلو اجازه یوازې ستر اډمین لري.'},403);
-    const email=String(body.email||'').trim().toLowerCase(), newRole=String(body.role||'');
-    const validRoles=['superadmin','admin','sectionAdmin','uploader','user'];
-    const active=body.active===undefined?true:body.active;
-    const folderKeys=Array.isArray(body.folderKeys)?[...new Set(body.folderKeys.map(x=>String(x).trim()).filter(Boolean))]:[];
-    const sectionKeys=Array.isArray(body.sectionKeys)?[...new Set(body.sectionKeys.map(x=>String(x).trim()).filter(Boolean))]:[];
-    const permissionKeys=['upload','createContent','editContent','deleteContent','publish','manageUsers','manageLibrary','editSettings','viewAudit','review'];
-    const permissions={};
-    if (body.permissions && typeof body.permissions==='object') for (const [k,v] of Object.entries(body.permissions)) { if(!permissionKeys.includes(k)||typeof v!=='boolean') return json({error:'د اجازې نوم یا ارزښت ناسم دی.'},400); permissions[k]=v; }
-    const validSections=['قرآن کریم او علوم القرآن','حدیث او علوم الحدیث','فقه او فروع','عقیده او توحید','اصول الفقه او قواعد','سیرت او شمائل نبوي ﷺ','اسلامي تاریخ او تمدن','د صحابه‌وو او علماوو ژوندلیکونه','عربي ژبه او ادبیات','اخلاق، تزکیه او سلوک','دعوت، تبلیغ او خطابت','فتاوی او معاصرې مسئلې','اسلامي زده کړې او درسي نصاب','دعاوې، اذکار او عبادتي لارښود','اسلام، کورنۍ او ټولنه','اسلام او معاصر علوم'];
-    if(!email||!validRoles.includes(newRole)||typeof active!=='boolean') return json({error:'ایمیل، رول او فعال حالت سم وټاکئ.'},400);
-    if(folderKeys.length>200||folderKeys.some(x=>x.length>300||!x.includes('::'))) return json({error:'د فولډر واک بڼه ناسمه ده.'},400);
-    if(sectionKeys.length>10||sectionKeys.some(x=>!validSections.includes(x))) return json({error:'علمي برخه ناسمه ده.'},400);
-    const uploadEnabled=permissions.upload===true||(permissions.upload===undefined&&['superadmin','admin','sectionAdmin','uploader'].includes(newRole));
-    if(uploadEnabled&&!['superadmin','admin'].includes(newRole)&&!folderKeys.length&&!sectionKeys.length) return json({error:'اپلوډر ته لږ تر لږه یوه علمي برخه یا فولډر وټاکئ.'},400);
-    if(['superadmin','admin'].includes(newRole)&&(folderKeys.length||sectionKeys.length)) return json({error:'ستر او عمومي اډمین ته ځانګړي فولډرونه مه ټاکئ.'},400);
-    const oauth=await getServiceAccessToken(env);
-    const lookup=await fetch(`https://identitytoolkit.googleapis.com/v1/projects/${PROJECT_ID}:queryAccounts`,{method:'POST',headers:{Authorization:`Bearer ${oauth}`,'Content-Type':'application/json'},body:JSON.stringify({expression:[{email}],returnUserInfo:true,limit:'1'})});
-    const lookupData=await lookup.json().catch(()=>({})); const user=(lookupData.userInfo||[]).find(x=>String(x.email||'').toLowerCase()===email);
-    if(!lookup.ok||!user) return json({error:'دا ایمیل په Firebase Authentication کې حساب نه لري.'},404);
-    const previous=await adminGet(env,'userRoles',user.localId);
-    if(previous?.fields.role==='superadmin'&&activeRole(previous.fields)&& (newRole!=='superadmin'||active===false)) {
-      const all=await adminList(env,'userRoles',500); if(all.filter(x=>x.fields.role==='superadmin'&&activeRole(x.fields)).length<=1) return json({error:'وروستی ستر اډمین نه شي لرې کېدای.'},409);
-    }
-    const fields={uid:user.localId,email:user.email||email,role:newRole,active,folderKeys:['superadmin','admin'].includes(newRole)?[]:folderKeys,sectionKeys:['superadmin','admin'].includes(newRole)?[]:sectionKeys,permissions:newRole==='superadmin'?{}:permissions,updatedBy:actor.uid};
-    const doc=fsDoc('userRoles',user.localId,fields);
-    await commitWrites(env,[{update:doc,updateMask:{fieldPaths:Object.keys(fields)},updateTransforms:[serverTimestampTransform('updatedAt')]},{update:fsDoc('auditLogs',`log_${Date.now()}_${crypto.randomUUID().slice(0,8)}`,{actorUid:actor.uid,action:'role_assigned',target:user.localId,details:{email,oldRole:previous?.fields.role||null,newRole,active,folderKeys,sectionKeys,permissions}}),updateTransforms:[serverTimestampTransform('createdAt')]}]);
-    return json({success:true,uid:user.localId,role:newRole});
-  }
-  if (action === 'reviewPendingLesson') {
-    const lessonId=String(body.lessonId||''), decision=String(body.decision||'');
-    if(!lessonId||!['forward','approve','reject'].includes(decision)) return json({error:'د درس پېژند او پرېکړه اړینه ده.'},400);
-    const pending=await adminGet(env,'pendingLessons',lessonId); if(!pending) return json({error:'درس ونه موندل شو.'},404);
-    const p=pending.fields, current=p.status;
-    if(decision==='forward') {
-      if(!hasAdminPermission(actor.data,'review')) return json({error:'د کتنې اجازه نشته.'},403);
-      if(!Array.isArray(actor.data.sectionKeys)||!actor.data.sectionKeys.includes(p.section)) return json({error:'دا علمي برخه ستاسې په واک کې نه ده.'},403);
-      if(current!=='pending') return json({error:'یوازې لومړنی انتظار درس لېږل کېدای شي.'},409);
-      await commitWrites(env,[updateWrite('pendingLessons',lessonId,{status:'admin_review',sectionReviewedBy:actor.uid},[serverTimestampTransform('sectionReviewedAt')]),{update:fsDoc('auditLogs',`log_${Date.now()}_${crypto.randomUUID().slice(0,8)}`,{actorUid:actor.uid,action:'lesson_forwarded_to_admin',target:lessonId,details:{section:p.section,folder:p.folder}}),updateTransforms:[serverTimestampTransform('createdAt')]}]);
-      return json({success:true,status:'admin_review'});
-    }
-    if(!['superadmin','admin'].includes(role)||!hasAdminPermission(actor.data,'publish')) return json({error:'وروستی تایید یوازې ستر اډمین او مجاز عمومي اډمین کولی شي.'},403);
-    if(!['pending','admin_review'].includes(current)) return json({error:'درس د وروستۍ پرېکړې لپاره په مناسب حالت کې نه دی.'},409);
-    if(role==='admin'&&current==='pending') { const sectionAdmins=await adminList(env,'userRoles',500); if(sectionAdmins.some(x=>x.fields.role==='sectionAdmin'&&activeRole(x.fields)&&Array.isArray(x.fields.sectionKeys)&&x.fields.sectionKeys.includes(p.section))) return json({error:'د دې برخې اډمین باید لومړی درس وڅېړي.'},409); }
-    const ids=Array.isArray(p.mediaIds)?[...new Set(p.mediaIds.map(String))]:[];
-    if(ids.length>50||ids.some(x=>!/^[A-Za-z0-9_-]{1,160}$/.test(x))) return json({error:'د فایلونو پېژندپاڼې ناسمې دي.'},400);
-    const mediaRows=await Promise.all(ids.map(id=>adminGet(env,'mediaAssets',id)));
-    if(mediaRows.some(x=>!x||x.fields.ownerUid!==p.ownerUid||x.fields.status!=='pending'||x.fields.storageProvider!=='cloudflare-r2'||typeof x.fields.storagePath!=='string'||!x.fields.storagePath.startsWith(`pending/${p.ownerUid}/`))) return json({error:'د درس یو یا څو فایلونه نیمګړي دي.'},409);
-    // Do not publish metadata unless every referenced object really exists in R2.
-    if (decision === 'approve') {
-      const checks = await Promise.all(mediaRows.map(row => env.MY_BUCKET.head(row.fields.storagePath)));
-      if (checks.some(object => !object)) return json({error:'د درس یو یا څو اصلي فایلونه په Cloudflare R2 کې نشته؛ درس نه شي خپرېدای.'},409);
-    }
-    const writes=[];
-    if(decision==='approve') {
-      const urls={};
-      for(let i=0;i<ids.length;i++){const id=ids[i];urls[id]=`${new URL(request.url).origin}/media/${encodeURIComponent(id)}`;writes.push(updateWrite('mediaAssets',id,{status:'approved',downloadUrl:urls[id],storageProvider:'cloudflare-r2',reviewedBy:actor.uid},[serverTimestampTransform('reviewedAt')]));}
-      const item=JSON.parse(JSON.stringify(p.item||{}));
-      const replace=file=>{if(!file)return file;const uri=urls[file.mediaId],cover=urls[file.coverMediaId];return {...file,...(uri?{uri,reviewStatus:'approved'}:{}),...(cover?{coverUri:cover,coverReviewStatus:'approved'}:{})};};
-      item.audioTracks=Array.isArray(item.audioTracks)?item.audioTracks.map(replace):[]; item.attachments=Array.isArray(item.attachments)?item.attachments.map(replace):[];
-      const pdf=mediaRows.map(x=>x.fields).find(x=>x.mediaType==='pdf'); if(pdf?.mediaId&&urls[pdf.mediaId]&&typeof item.pdf==='string') item.pdf=urls[pdf.mediaId];
-      if(item.pdfCoverMediaId&&urls[item.pdfCoverMediaId]){item.pdfCoverUri=urls[item.pdfCoverMediaId];item.pdfCoverReviewStatus='approved';}
-      if(item.audioTracks.length)item.audio=item.audioTracks[0].uri; item.cloudReviewStatus='approved';
-      const publishedId=String(p.item?.id||lessonId);
-      writes.push({update:fsDoc('publishedLessons',publishedId,{item,ownerUid:p.ownerUid,section:p.section,folder:p.folder,scopeKey:p.scopeKey||`${p.section}::${p.folder}`,status:'approved',mediaIds:ids,approvedBy:actor.uid}),updateTransforms:[serverTimestampTransform('approvedAt')]});
-      writes.push(updateWrite('pendingLessons',lessonId,{status:'approved',reviewedBy:actor.uid},[serverTimestampTransform('reviewedAt')]));
-    } else {
-      for(const id of ids) writes.push(updateWrite('mediaAssets',id,{status:'rejected',reviewedBy:actor.uid},[serverTimestampTransform('reviewedAt')]));
-      writes.push(updateWrite('pendingLessons',lessonId,{status:'rejected',reviewedBy:actor.uid},[serverTimestampTransform('reviewedAt')]));
-    }
-    writes.push({update:fsDoc('auditLogs',`log_${Date.now()}_${crypto.randomUUID().slice(0,8)}`,{actorUid:actor.uid,action:decision==='approve'?'lesson_published':'lesson_rejected',target:lessonId,details:{section:p.section,folder:p.folder,previousStatus:current}}),updateTransforms:[serverTimestampTransform('createdAt')]});
-    await commitWrites(env,writes);
-    return json({success:true,status:decision==='approve'?'approved':'rejected',cleanupMediaIds:decision==='reject'?ids:[]});
-  }
-  return json({error:'Unknown admin action'},404);
-}
-
-async function bootstrapFirstSuperAdmin(request, env) {
-  const authResult = await authenticate(request);
-  if (authResult.error) return authResult.error;
-
-  // دا UID د پروژې د مالک له خوا تایید شوی؛ یوازې همدې حساب ته د لومړي رول د جوړولو اجازه ده.
-  const OWNER_UID = 'CtaXP0WGrFfusIKSsMFYP4ZKb6P2';
-  if (authResult.user.sub !== OWNER_UID) {
-    return json({ error: 'دا حساب د لومړي ستر اډمین د جوړولو اجازه نه لري.' }, 403);
-  }
-
-  const existing = await adminGet(env, 'userRoles', OWNER_UID);
-  if (existing?.fields.role === 'superadmin' && activeRole(existing.fields)) {
-    return json({ success: true, alreadyConfigured: true, uid: OWNER_UID, role: 'superadmin', active: true });
-  }
-  if (existing?.fields.bootstrapCompleted === true) {
-    return json({ error: 'د لومړي ستر اډمین د یو ځل تنظیم نښه موجوده ده؛ لاسي امنیتي کتنه اړینه ده.' }, 409);
-  }
-
-  const email = typeof authResult.user.email === 'string'
-    ? authResult.user.email
-    : (existing?.fields.email || '');
-  const fields = {
-    uid: OWNER_UID,
-    email,
-    role: 'superadmin',
-    active: true,
-    folderKeys: [],
-    sectionKeys: [],
-    permissions: {},
-    bootstrapCompleted: true,
-    updatedBy: OWNER_UID
-  };
-
-  await commitWrites(env, [
-    {
-      update: fsDoc('userRoles', OWNER_UID, fields),
-      updateMask: { fieldPaths: Object.keys(fields) },
-      updateTransforms: [serverTimestampTransform('updatedAt')]
-    },
-    {
-      update: fsDoc('auditLogs', `log_${Date.now()}_${crypto.randomUUID().slice(0,8)}`, {
-        actorUid: OWNER_UID,
-        action: 'first_superadmin_bootstrap',
-        target: OWNER_UID,
-        details: { email, previousRole: existing?.fields.role || null }
-      }),
-      updateTransforms: [serverTimestampTransform('createdAt')]
-    }
-  ]);
-
-  return json({ success: true, uid: OWNER_UID, role: 'superadmin', active: true });
-}
-
-export default {
-  async fetch(request, env) {
-    const url = new URL(request.url); const parts = url.pathname.split('/').filter(Boolean);
-    if (request.method === 'OPTIONS') return cors();
-    if (url.pathname === '/bootstrap/superadmin' && request.method === 'POST') {
-      try {
-        return await bootstrapFirstSuperAdmin(request, env);
-      } catch (error) {
-        console.error('Super Admin bootstrap failed', {
-          message: String(error?.message || error).slice(0, 300)
-        });
-        return json({
-          error: 'د لومړي ستر اډمین د جوړولو عملیات ناکام شول.',
-          detail: String(error?.message || 'Unknown error').slice(0, 240)
-        }, 500);
-      }
-    }
-    if (parts.length === 2 && parts[0] === 'admin' && request.method === 'POST') {
-      try { return await adminApi(request, env, parts[1]); }
-      catch (error) { console.error('Worker admin API failed', { action: parts[1], message: String(error?.message || error).slice(0, 300) }); return json({ error: 'د اداري سرور په عملیاتو کې ستونزه رامنځته شوه.', detail: String(error?.message || 'Unknown error').slice(0, 240) }, 500); }
-    }
-    if (url.pathname === '/health' && request.method === 'GET') return json({
-      status: 'online',
-      service: 'Mirath Islam Media',
-      projectId: PROJECT_ID,
-      r2Binding: Boolean(env.MY_BUCKET && typeof env.MY_BUCKET.put === 'function'),
-      serviceAccount: inspectServiceAccount(env)
-    });
-    if (parts.length === 2 && parts[0] === 'upload' && request.method === 'PUT') return uploadMedia(request, env, parts[1]);
-    if (parts.length === 2 && parts[0] === 'media' && ['GET', 'HEAD'].includes(request.method)) return serveMedia(request, env, parts[1]);
-    if (parts.length === 2 && parts[0] === 'media' && request.method === 'DELETE') return deleteMedia(request, env, parts[1]);
-    return json({ error: 'Not found' }, 404);
-  }
-};
+const cors = { 'Access-Control-Allow-Origin':'*', 'Access-Control-Allow-Methods':'GET,POST,PUT,DELETE,OPTIONS', 'Access-Control-Allow-Headers':'Content-Type,Authorization,X-File-Size', 'Access-Control-Max-Age':'86400' };
+const json=(data,status=200)=>new Response(JSON.stringify(data),{status,headers:{...cors,'Content-Type':'application/json; charset=utf-8'}});
+const enc=s=>new TextEncoder().encode(s);
+const b64u=b=>btoa(String.fromCharCode(...new Uint8Array(b))).replace(/=/g,'').replace(/\+/g,'-').replace(/\//g,'_');
+const unb64u=s=>Uint8Array.from(atob(s.replace(/-/g,'+').replace(/_/g,'/')),c=>c.charCodeAt(0));
+async function hashPassword(password,salt){const key=await crypto.subtle.importKey('raw',enc(password),'PBKDF2',false,['deriveBits']);const bits=await crypto.subtle.deriveBits({name:'PBKDF2',salt:enc(salt),iterations:210000,hash:'SHA-256'},key,256);return b64u(bits);}
+async function sign(payload,secret){const body=b64u(enc(JSON.stringify(payload)));const key=await crypto.subtle.importKey('raw',enc(secret),{name:'HMAC',hash:'SHA-256'},false,['sign']);const sig=await crypto.subtle.sign('HMAC',key,enc(body));return `${body}.${b64u(sig)}`;}
+async function verify(token,secret){try{const [body,sig]=token.split('.');const key=await crypto.subtle.importKey('raw',enc(secret),{name:'HMAC',hash:'SHA-256'},false,['verify']);const ok=await crypto.subtle.verify('HMAC',key,unb64u(sig),enc(body));if(!ok)return null;const p=JSON.parse(new TextDecoder().decode(unb64u(body)));return p.exp>Date.now()/1000?p:null;}catch{return null;}}
+async function body(req){try{return await req.json();}catch{return {};}}
+function cleanPath(path){const p=decodeURIComponent(path).replace(/^\/+|\/+$/g,'');if(!p||p.split('/').some(x=>!x||x==='.'||x==='..'))throw Error('Invalid document path');return p;}
+async function userFor(req,env){const h=req.headers.get('Authorization')||'';const p=await verify(h.replace(/^Bearer\s+/i,''),env.AUTH_SECRET);if(!p)return null;const roleData=await docGet(env,`userRoles/${p.sub}`)||{};return {uid:p.sub,email:p.email,role:roleData.active===false?'user':(roleData.role||'user'),roleData};}
+const admin=u=>u&&['superadmin','admin'].includes(u.role);
+const can=(u,permission)=>{if(!u)return false;if(u.role==='superadmin')return true;const p=u.roleData?.permissions||{};if(Object.prototype.hasOwnProperty.call(p,permission))return p[permission]===true;const defaults={admin:['upload','createContent','editContent','deleteContent','publish','manageLibrary','editSettings','viewAudit','review'],sectionAdmin:['upload','createContent','editContent','review'],uploader:['upload','createContent'],user:[]};return (defaults[u.role]||[]).includes(permission);};
+async function docGet(env,path){const row=await env.DB.prepare('SELECT data FROM documents WHERE path=?').bind(path).first();return row?JSON.parse(row.data):null;}
+function resolveSentinels(value){if(Array.isArray(value))return value.map(resolveSentinels);if(value&&typeof value==='object'){if(value.__serverTimestamp)return value.value||new Date().toISOString();const out={};for(const [k,v] of Object.entries(value))out[k]=resolveSentinels(v);return out;}return value;}
+async function logAction(env,u,action,target,details={}){const id=`log_${Date.now()}_${crypto.randomUUID().slice(0,8)}`;await docPut(env,`auditLogs/${id}`,{actorUid:u.uid,actorEmail:u.email,action,target,details,createdAt:new Date().toISOString()});}
+async function docPut(env,path,data,merge=false){data=resolveSentinels(data);let next=data;if(merge){const old=await docGet(env,path);next={...(old||{}),...data};}await env.DB.prepare('INSERT INTO documents(path,collection_name,doc_id,data,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(path) DO UPDATE SET data=excluded.data,updated_at=excluded.updated_at').bind(path,path.split('/').slice(0,-1).join('/'),path.split('/').pop(),JSON.stringify(next),new Date().toISOString()).run();return next;}
+async function authorizeDocRead(u,path){const c=path.split('/')[0];if(['publishedLessons','formalCourses','appConfig','library_sync_v1'].includes(c))return true;if(!u)return false;if(c==='userRoles')return admin(u)||path===`userRoles/${u.uid}`;if(c==='courseEnrollments')return admin(u)||path.split('/').length===1||path.split('/').pop().startsWith(u.uid+'_');if(c==='auditLogs')return can(u,'viewAudit');if(c==='pendingLessons')return can(u,'review');if(c==='mediaAssets'){if(admin(u))return true;const d=await docGetForAuth(path);return d?.ownerUid===u.uid;}return admin(u);}
+let _authEnv; async function docGetForAuth(path){if(!_authEnv)return null;return docGet(_authEnv,path);}
+async function authorizeDocWrite(u,path,data){if(!u)return false;const c=path.split('/')[0];if(u.role==='superadmin')return true;if(admin(u)&&((c==='mediaAssets'&&can(u,'upload'))||(c==='pendingLessons'&&(can(u,'createContent')||can(u,'editContent')))||(c==='appConfig'&&(can(u,'editSettings')||can(u,'editContent')))||(c==='library_sync_v1'&&can(u,'manageLibrary'))||(c==='auditLogs'&&can(u,'viewAudit'))||(c==='publishedLessons'&&can(u,'publish'))||(c==='formalCourses'&&can(u,'createContent'))))return true;if(c==='userRoles'||c==='auditLogs'||c==='publishedLessons'||c==='formalCourses'||c==='appConfig'||c==='library_sync_v1')return false;if(c==='pendingLessons'||c==='mediaAssets'){if(!['uploader','sectionAdmin'].includes(u.role))return false;if(c==='mediaAssets'&&!can(u,'upload'))return false;if(c==='pendingLessons'&&!can(u,'createContent'))return false;if(data?.ownerUid!==u.uid)return false;if(['sectionAdmin','uploader'].includes(u.role)){const sk=u.roleData?.sectionKeys||[],fk=u.roleData?.folderKeys||[];if(!(sk.includes(data.section)||fk.includes(`${data.section}::${data.folder}`)))return false;}return true;}if(c==='courseEnrollments')return !data?.uid||data.uid===u.uid;return false;}
+async function getRole(env,uid){const d=await docGet(env,`userRoles/${uid}`);return d?.active===false?'user':(d?.role||'user');}
+async function issueSession(env,row){const role=await getRole(env,row.uid);const payload={sub:row.uid,email:row.email,role,exp:Math.floor(Date.now()/1000)+60*60*24*30};return {token:await sign(payload,env.AUTH_SECRET),user:{uid:row.uid,email:row.email,role,displayName:row.display_name||''}};}
+async function authRoute(req,url,env){const path=url.pathname;if(!['/v1/auth/register','/v1/auth/login','/v1/auth/me'].includes(path))return null;const b=req.method==='GET'?{}:await body(req);
+ if(path==='/v1/auth/register'&&req.method==='POST'){const email=String(b.email||'').trim().toLowerCase(),password=String(b.password||'');if(!/^\S+@\S+\.\S+$/.test(email)||password.length<8)return json({error:'معتبر ایمیل او لږ تر لږه ۸ توري پاسورډ ولیکئ.'},400);const exists=await env.DB.prepare('SELECT uid FROM users WHERE email=?').bind(email).first();if(exists)return json({error:'دا ایمیل له مخکې ثبت دی.'},409);const uid=crypto.randomUUID();const salt=b64u(crypto.getRandomValues(new Uint8Array(16)));const hash=await hashPassword(password,salt);await env.DB.prepare('INSERT INTO users(uid,email,password_hash,password_salt,display_name,created_at) VALUES(?,?,?,?,?,?)').bind(uid,email,hash,salt,'',new Date().toISOString()).run();await docPut(env,`userRoles/${uid}`,{uid,email,role:'user',active:true,createdAt:new Date().toISOString()});const row={uid,email};return json(await issueSession(env,row),201);}
+ if(path==='/v1/auth/login'&&req.method==='POST'){const email=String(b.email||'').trim().toLowerCase();const row=await env.DB.prepare('SELECT uid,email,password_hash,password_salt,display_name FROM users WHERE email=?').bind(email).first();if(!row||await hashPassword(String(b.password||''),row.password_salt)!==row.password_hash)return json({error:'ایمیل یا پاسورډ ناسم دی.'},401);return json(await issueSession(env,row));}
+ if(path==='/v1/auth/me'&&req.method==='GET'){const u=await userFor(req,env);if(!u)return json({error:'ناسته پای ته رسېدلې؛ بیا ننوتل وکړئ.'},401);const row=await env.DB.prepare('SELECT uid,email,display_name FROM users WHERE uid=?').bind(u.uid).first();return row?json({user:{...row,role:await getRole(env,u.uid)}}):json({error:'User not found'},404);}
+ return null;}
+async function queryDocs(req,env,u){const b=await body(req);const path=cleanPath(b.path);if(!await authorizeDocRead(u,path))return json({error:'اجازه نشته.'},403);if(['pendingLessons','mediaAssets'].includes(path.split('/')[0])&&!admin(u)||path.split('/')[0]==='auditLogs'&&!can(u,'viewAudit'))return json({error:'اجازه نشته.'},403);const prefix=path+'/';const rows=await env.DB.prepare('SELECT path,data FROM documents WHERE collection_name=? OR path LIKE ? ORDER BY updated_at DESC LIMIT 10000').bind(path,prefix+'%').all();let docs=(rows.results||[]).filter(r=>r.path.split('/').length===path.split('/').length+1).map(r=>({path:r.path,data:JSON.parse(r.data)}));if(path.split('/')[0]==='courseEnrollments'&&!admin(u))docs=docs.filter(d=>d.data?.uid===u.uid);let maxRows=1000;for(const c of (b.constraints||[])){if(c.type==='where')docs=docs.filter(d=>{const v=c.field==='__name__'?d.path.split('/').pop():d.data?.[c.field];switch(c.op){case '==':return v===c.value;case '!=':return v!==c.value;case '>':return v>c.value;case '>=':return v>=c.value;case '<':return v<c.value;case '<=':return v<=c.value;case 'array-contains':return Array.isArray(v)&&v.includes(c.value);default:return false;}});else if(c.type==='orderBy')docs.sort((a,b)=>{const x=c.field==='__name__'?a.path.split('/').pop():a.data?.[c.field];const y=c.field==='__name__'?b.path.split('/').pop():b.data?.[c.field];return (x>y?1:x<y?-1:0)*(c.direction==='desc'?-1:1);});else if(c.type==='startAfter'){const i=docs.findIndex(d=>d.path.split('/').pop()===c.id);if(i>=0)docs=docs.slice(i+1);}else if(c.type==='limit')maxRows=Math.max(0,Math.min(1000,c.count));}docs=docs.slice(0,maxRows);
+ return json({docs});}
+async function adminRoute(req,url,env,u){const action=decodeURIComponent(url.pathname.split('/').pop());const b=await body(req);const reviewer=can(u,'review');if(!reviewer)return json({error:'دا کار یوازې د کتونکي/اډمین صلاحیت لري.'},403);if(['listUserRoles','setUserRoleStatus','setUserRoleByEmail'].includes(action)&&u.role!=='superadmin')return json({error:'دا صلاحیت یوازې ستر اډمین لري.'},403);
+ if(action==='listPendingLessons'){const r=await env.DB.prepare("SELECT path,data FROM documents WHERE collection_name='pendingLessons' ORDER BY updated_at DESC LIMIT 500").all();let lessons=(r.results||[]).map(x=>({id:x.path.split('/').pop(),...JSON.parse(x.data)})).filter(x=>['pending','admin_review'].includes(x.status));if(u.role==='sectionAdmin'){const sk=u.roleData?.sectionKeys||[],fk=u.roleData?.folderKeys||[];lessons=lessons.filter(x=>x.status==='pending'&&(sk.includes(x.section)||fk.includes(`${x.section}::${x.folder}`)));}else lessons=lessons.filter(x=>x.status==='admin_review'||x.status==='pending');return json({lessons});}
+ if(action==='listUserRoles'){const r=await env.DB.prepare("SELECT path,data FROM documents WHERE collection_name='userRoles' ORDER BY updated_at DESC LIMIT 1000").all();return json({users:(r.results||[]).map(x=>({uid:x.path.split('/').pop(),...JSON.parse(x.data)}))});}
+ if(action==='setUserRoleStatus'){const p=`userRoles/${b.uid}`;const d=await docGet(env,p);if(!d)return json({error:'کارن ونه موندل شو.'},404);if(d.role==='superadmin'&&b.active===false)return json({error:'د ستر اډمین حساب له دې لارې نه شي بندېدای.'},409);await docPut(env,p,{...d,active:!!b.active,updatedAt:new Date().toISOString()});await logAction(env,u,'user_status_changed',b.uid,{active:!!b.active});return json({success:true});}
+ if(action==='setUserRoleByEmail'){const email=String(b.email||'').toLowerCase();const row=await env.DB.prepare('SELECT uid,email FROM users WHERE email=?').bind(email).first();if(!row)return json({error:'دا ایمیل لرونکی حساب تر اوسه نه دی جوړ شوی.'},404);if(!['superadmin','admin','sectionAdmin','uploader','user'].includes(b.role))return json({error:'ناسم رول.'},400);const oldRole=await docGet(env,`userRoles/${row.uid}`);if(oldRole?.role==='superadmin'&&b.role!=='superadmin'){const all=await env.DB.prepare("SELECT data FROM documents WHERE collection_name='userRoles'").all();const active=(all.results||[]).filter(x=>{const d=JSON.parse(x.data);return d.role==='superadmin'&&d.active!==false;});if(active.length<=1)return json({error:'وروستی ستر اډمین نه شي عادي کارن ته بدل کېدای.'},409);}await docPut(env,`userRoles/${row.uid}`,{uid:row.uid,email,role:b.role,active:true,permissions:b.permissions||{},folderKeys:b.folderKeys||[],sectionKeys:b.sectionKeys||[],updatedAt:new Date().toISOString()});await logAction(env,u,'role_assigned',row.uid,{email,role:b.role,folderKeys:b.folderKeys||[],sectionKeys:b.sectionKeys||[]});return json({success:true,uid:row.uid});}
+ if(action==='reviewPendingLesson'){const p=`pendingLessons/${b.lessonId}`;const d=await docGet(env,p);if(!d)return json({error:'درس ونه موندل شو.'},404);const decision=String(b.decision||'');if(!['forward','approve','reject'].includes(decision))return json({error:'ناسمه پرېکړه.'},400);if(decision==='forward'){if(u.role!=='sectionAdmin')return json({error:'یوازې د برخې اډمین درس عمومي اډمین ته لېږلای شي.'},403);const sk=u.roleData?.sectionKeys||[],fk=u.roleData?.folderKeys||[];if(!(sk.includes(d.section)||fk.includes(`${d.section}::${d.folder}`)))return json({error:'دا علمي برخه ستاسې په واک کې نه ده.'},403);if(d.status!=='pending')return json({error:'دا درس د لېږلو لپاره په مناسب حالت کې نه دی.'},409);await docPut(env,p,{...d,status:'admin_review',forwardedBy:u.uid,forwardedAt:new Date().toISOString()});await logAction(env,u,'lesson_forwarded_to_admin',b.lessonId,{section:d.section,folder:d.folder});return json({success:true,forwarded:true});}
+ if(!admin(u)||!can(u,'publish'))return json({error:'وروستی تایید یوازې د خپرولو واک لرونکی عمومي اډمین لري.'},403);if(!['pending','admin_review'].includes(d.status))return json({error:'دا درس د وروستۍ پرېکړې لپاره په مناسب حالت کې نه دی.'},409);
+ if(u.role==='admin'&&d.status==='pending'){const rs=await env.DB.prepare("SELECT data FROM documents WHERE collection_name='userRoles'").all();const hasSectionAdmin=(rs.results||[]).some(x=>{const r=JSON.parse(x.data);return r.active!==false&&r.role==='sectionAdmin'&&(r.sectionKeys||[]).includes(d.section);});if(hasSectionAdmin)return json({error:'د دې برخې اډمین باید لومړی درس وڅېړي.'},409);}
+ const ids=Array.isArray(d.mediaIds)?[...new Set(d.mediaIds.map(String))]:[];if(ids.length>50)return json({error:'د فایلونو شمېر له حد څخه زیات دی.'},400);const mediaRows=await Promise.all(ids.map(id=>docGet(env,`mediaAssets/${id}`)));if(mediaRows.some(m=>!m||m.ownerUid!==d.ownerUid||m.status!=='pending'||m.storageProvider!=='cloudflare-r2'))return json({error:'د درس یو یا څو فایلونه نیمګړي دي.'},409);
+ if(decision==='approve'){const urls={};for(let i=0;i<ids.length;i++){const id=ids[i];urls[id]=`${url.origin}/media/${encodeURIComponent(id)}`;await docPut(env,`mediaAssets/${id}`,{...mediaRows[i],status:'approved',downloadUrl:urls[id],reviewedBy:u.uid,reviewedAt:new Date().toISOString()});}
+ const item=JSON.parse(JSON.stringify(d.item||{}));const replace=file=>{if(!file)return file;const uri=urls[file.mediaId],cover=urls[file.coverMediaId];return {...file,...(uri?{uri,reviewStatus:'approved'}:{}),...(cover?{coverUri:cover,coverReviewStatus:'approved'}:{})};};item.audioTracks=Array.isArray(item.audioTracks)?item.audioTracks.map(replace):[];item.attachments=Array.isArray(item.attachments)?item.attachments.map(replace):[];if(item.pdfMediaId&&urls[item.pdfMediaId]){item.pdf=urls[item.pdfMediaId];item.pdfReviewStatus='approved';}if(item.pdfCoverMediaId&&urls[item.pdfCoverMediaId]){item.pdfCoverUri=urls[item.pdfCoverMediaId];item.pdfCoverReviewStatus='approved';}if(item.audioTracks.length)item.audio=item.audioTracks[0].uri;item.cloudReviewStatus='approved';const publishedId=String(item.id||b.lessonId);await docPut(env,`publishedLessons/${publishedId}`,{item,ownerUid:d.ownerUid,section:d.section,folder:d.folder,scopeKey:d.scopeKey||`${d.section}::${d.folder}`,status:'approved',mediaIds:ids,approvedBy:u.uid,approvedAt:new Date().toISOString()});await docPut(env,p,{...d,status:'approved',reviewedBy:u.uid,reviewedAt:new Date().toISOString()});await logAction(env,u,'lesson_published',b.lessonId,{section:d.section,folder:d.folder});return json({success:true,status:'approved',cleanupMediaIds:[]});}
+ for(let i=0;i<ids.length;i++)await docPut(env,`mediaAssets/${ids[i]}`,{...mediaRows[i],status:'rejected',reviewedBy:u.uid,reviewedAt:new Date().toISOString()});await docPut(env,p,{...d,status:'rejected',reviewedBy:u.uid,reviewedAt:new Date().toISOString()});await logAction(env,u,'lesson_rejected',b.lessonId,{section:d.section,folder:d.folder});return json({success:true,status:'rejected',cleanupMediaIds:ids});}
+ return json({error:'ناپېژندل شوی admin action'},404);}
+async function formalCall(req,url,env,u){const name=decodeURIComponent(url.pathname.split('/').pop());const b=await body(req);if(!u)return json({error:'لومړی حساب ته ننوځئ.'},401);
+ if(name==='saveFormalCourse'){if(!admin(u)||!can(u,'createContent'))return json({error:'د کورس جوړولو اجازه نشته.'},403);if(!String(b.title||'').trim()||!Array.isArray(b.lessonIds)||!b.lessonIds.length)return json({error:'د کورس نوم او درسونه اړین دي.'},400);const id=crypto.randomUUID();await docPut(env,`formalCourses/${id}`,{...b,createdBy:u.uid,createdAt:new Date().toISOString(),published:true});return json({success:true,id});}
+ const course=await docGet(env,`formalCourses/${b.courseId}`);if(!course||course.published!==true)return json({error:'کورس ونه موندل شو یا خپور شوی نه دی.'},404);const path=`courseEnrollments/${u.uid}_${b.courseId}`;let enrollment=await docGet(env,path)||{uid:u.uid,courseId:b.courseId,completedLessonIds:[],createdAt:new Date().toISOString()};
+ if(name==='enrollFormalCourse'){enrollment.updatedAt=new Date().toISOString();await docPut(env,path,enrollment);return json({success:true});}
+ if(name==='completeFormalLesson'){if(!enrollment||!Array.isArray(course.lessonIds)||!course.lessonIds.includes(b.lessonId))return json({error:'دا درس د دې کورس برخه نه ده.'},403);if(!enrollment.completedLessonIds.includes(b.lessonId))enrollment.completedLessonIds.push(b.lessonId);enrollment.updatedAt=new Date().toISOString();await docPut(env,path,enrollment);return json({success:true});}
+ if(name==='submitFormalExam'){if(!enrollment||!Array.isArray(course.lessonIds)||!course.lessonIds.every(id=>enrollment.completedLessonIds.includes(id)))return json({error:'لومړی د کورس ټول درسونه بشپړ کړئ.'},403);const qs=course.examQuestions||[];if(!qs.length||!Array.isArray(b.answers)||b.answers.length!==qs.length)return json({error:'د ازموینې ځوابونه نیمګړي دي.'},400);let score=0;qs.forEach((q,i)=>{if(Number(b.answers[i])===Number(q.correctIndex))score++;});const percent=Math.round(score/qs.length*100);const passed=percent>=Number(course.passPercent||70);const submissionId=crypto.randomUUID();const certificate=passed?{id:crypto.randomUUID(),certificateNumber:`MI-${Date.now().toString(36).toUpperCase()}`,uid:u.uid,email:u.email,courseId:b.courseId,courseTitle:course.title,score:percent,issuedAt:new Date().toISOString()}:null;await docPut(env,`formalSubmissions/${submissionId}`,{uid:u.uid,courseId:b.courseId,answers:b.answers,score:percent,passed,submittedAt:new Date().toISOString()});if(certificate){await docPut(env,`formalCertificates/${certificate.id}`,certificate);enrollment.certificateId=certificate.id;await docPut(env,path,enrollment);}return json({score:percent,passed,certificate});}
+ return json({error:'ناپېژندل شوی formal action'},404);}
+export default {async fetch(req,env){if(req.method==='OPTIONS')return new Response(null,{headers:cors});const url=new URL(req.url);try{
+ _authEnv=env; if(url.pathname==='/health')return json({status:'online',service:'Mirath Islam Cloudflare',d1:!!env.DB,r2:!!env.MY_BUCKET,authSecret:!!env.AUTH_SECRET,mode:'cloudflare-only'});
+ const authResponse=await authRoute(req,url,env);if(authResponse)return authResponse;
+ if(url.pathname==='/v1/query'&&req.method==='POST')return queryDocs(req,env,await userFor(req,env));
+ if(url.pathname.startsWith('/v1/docs/')){const path=cleanPath(url.pathname.slice('/v1/docs/'.length));const u=await userFor(req,env);if(req.method==='GET'){if(!await authorizeDocRead(u,path))return json({error:'اجازه نشته.'},403);const data=await docGet(env,path);return json({data:data??null,exists:!!data});}if(req.method==='PUT'){const b=await body(req);if(!await authorizeDocWrite(u,path,b.data))return json({error:'د دې معلوماتو د ثبت اجازه نشته.'},403);await docPut(env,path,b.data||{},b.merge);return json({success:true});}if(req.method==='DELETE'){const existing=await docGet(env,path);if(!existing||!await authorizeDocWrite(u,path,existing))return json({error:'اجازه نشته.'},403);if(!admin(u)&&existing.ownerUid!==u.uid&&existing.uid!==u.uid)return json({error:'اجازه نشته.'},403);await env.DB.prepare('DELETE FROM documents WHERE path=?').bind(path).run();return json({success:true});}}
+ if(url.pathname.startsWith('/admin/'))return adminRoute(req,url,env,await userFor(req,env));
+ if(url.pathname.startsWith('/v1/call/'))return formalCall(req,url,env,await userFor(req,env));
+ if(url.pathname.startsWith('/bootstrap/superadmin')&&req.method==='POST'){const u=await userFor(req,env);if(!u||!env.BOOTSTRAP_ADMIN_EMAIL||u.email.toLowerCase()!==env.BOOTSTRAP_ADMIN_EMAIL.toLowerCase())return json({error:'د Super Admin ایمیل له ټاکل شوي ایمیل سره برابر نه دی.'},403);await docPut(env,`userRoles/${u.uid}`,{uid:u.uid,email:u.email,role:'superadmin',active:true,permissions:{},updatedAt:new Date().toISOString()});await logAction(env,u,'superadmin_bootstrap',u.uid,{});return json({success:true});}
+ if(url.pathname.startsWith('/upload/')&&req.method==='PUT'){const u=await userFor(req,env);if(!u)return json({error:'لومړی حساب ته ننوځئ.'},401);const id=decodeURIComponent(url.pathname.split('/').pop());const asset=await docGet(env,`mediaAssets/${id}`);if(!asset||(!admin(u)&&(asset.ownerUid!==u.uid||!can(u,'upload'))))return json({error:'د فایل اپلوډ اجازه نشته.'},403);const size=Number(req.headers.get('X-File-Size')||req.headers.get('Content-Length')||0);const contentLength=Number(req.headers.get('Content-Length')||size);if(size<=0||size>100*1024*1024||contentLength>100*1024*1024)return json({error:'فایل له ۱۰۰ MB څخه لوی دی.'},413);await env.MY_BUCKET.put(`media/${id}`,req.body,{httpMetadata:{contentType:req.headers.get('Content-Type')||'application/octet-stream'}});return json({success:true,id});}
+ if(url.pathname.startsWith('/media/')){const u=await userFor(req,env);const id=decodeURIComponent(url.pathname.split('/').pop());if(req.method==='DELETE'){if(!u)return json({error:'اجازه نشته.'},403);const asset=await docGet(env,`mediaAssets/${id}`);if(!asset||(!admin(u)&&(asset.ownerUid!==u.uid||!['pending','rejected'].includes(asset.status))))return json({error:'اجازه نشته.'},403);await env.MY_BUCKET.delete(`media/${id}`);return json({success:true});}if(req.method==='GET'){const asset=await docGet(env,`mediaAssets/${id}`);if(!asset||(!admin(u)&&!['published','approved'].includes(asset.status)))return json({error:'فایل ونه موندل شو.'},404);const obj=await env.MY_BUCKET.get(`media/${id}`);if(!obj)return json({error:'فایل په R2 کې نشته.'},404);return new Response(obj.body,{headers:{...cors,'Content-Type':obj.httpMetadata?.contentType||'application/octet-stream','Cache-Control':'public, max-age=3600'}});}}
+ return json({error:'Not found'},404);
+ }catch(e){return json({error:e?.message||'Internal error'},500);}}};
