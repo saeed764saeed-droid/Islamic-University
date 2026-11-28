@@ -19,10 +19,8 @@ import {
 } from 'react-native';
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { auth, db } from './firebaseClient';
+import { auth, db, onAuthStateChanged, signInWithEmailAndPassword, signOut, collection, doc, getDoc, getDocs, onSnapshot, query, where, orderBy, documentId, startAfter, limit, setDoc, deleteDoc, serverTimestamp } from './cloudflareClient';
 import FormalLearning from './FormalLearning';
-import { onAuthStateChanged, signInWithEmailAndPassword, signOut } from 'firebase/auth';
-import { collection, doc, getDoc, getDocs, onSnapshot, query, where, orderBy, documentId, startAfter, limit, setDoc, deleteDoc, serverTimestamp } from 'firebase/firestore';
 
 import * as DocumentPicker from 'expo-document-picker';
 import * as Sharing from 'expo-sharing';
@@ -507,11 +505,11 @@ export default function App() {
   const [saving, setSaving] = useState(false);
   const [backupBusy, setBackupBusy] = useState(false);
   const [backupStatus, setBackupStatus] = useState('');
-  const [firebaseEmail, setFirebaseEmail] = useState('');
-  const [firebasePassword, setFirebasePassword] = useState('');
-  const [firebaseUser, setFirebaseUser] = useState(null);
-  const [firebaseRole, setFirebaseRole] = useState('');
-  const [firebaseRoleData, setFirebaseRoleData] = useState(null);
+  const [cloudflareEmail, setCloudflareEmail] = useState('');
+  const [cloudflarePassword, setCloudflarePassword] = useState('');
+  const [cloudflareUser, setCloudflareUser] = useState(null);
+  const [cloudflareRole, setCloudflareRole] = useState('');
+  const [cloudflareRoleData, setCloudflareRoleData] = useState(null);
   const [pendingLessons, setPendingLessons] = useState([]);
   const [auditLogs, setAuditLogs] = useState([]);
   const [managedUsers, setManagedUsers] = useState([]);
@@ -520,8 +518,8 @@ export default function App() {
   const [newRoleFolders, setNewRoleFolders] = useState('');
   const [newRoleSections, setNewRoleSections] = useState('');
   const [newRolePermissions, setNewRolePermissions] = useState({});
-  const [firebaseBusy, setFirebaseBusy] = useState(false);
-  const [firebaseStatus, setFirebaseStatus] = useState('');
+  const [cloudflareBusy, setCloudflareBusy] = useState(false);
+  const [cloudflareStatus, setCloudflareStatus] = useState('');
 
   // ------------------------------------------------
   // 10.2 - د انتخاب شویو برخو معلومات
@@ -816,31 +814,31 @@ export default function App() {
     let roleUnsubscribe = null;
     const unsubscribe = onAuthStateChanged(auth, user => {
       if (roleUnsubscribe) { roleUnsubscribe(); roleUnsubscribe = null; }
-      setFirebaseUser(user || null);
-      setFirebaseRole('');
-      setFirebaseRoleData(null);
+      setCloudflareUser(user || null);
+      setCloudflareRole('');
+      setCloudflareRoleData(null);
       setPendingLessons([]);
       if (!user) {
-        setFirebaseStatus('له Firebase سره ننوتل نه دي شوي.');
+        setCloudflareStatus('Cloudflare حساب ته ننوتل نه دي شوي.');
         return;
       }
       roleUnsubscribe = onSnapshot(doc(db, 'userRoles', user.uid), roleSnap => {
         const roleData = roleSnap.exists() ? roleSnap.data() : null;
         if (!roleData || roleData.active === false) {
-          setFirebaseRole('');
-          setFirebaseRoleData(null);
-          setFirebaseStatus('حساب وصل دی، خو د اپلېکېشن مدیر/اپلوډر اجازه ورته نه ده ټاکل شوې.');
+          setCloudflareRole('');
+          setCloudflareRoleData(null);
+          setCloudflareStatus('حساب وصل دی، خو د اپلېکېشن مدیر/اپلوډر اجازه ورته نه ده ټاکل شوې.');
           return;
         }
         // د پخواني Super Admin سندونه چې active پکې نه وي، د فعال حساب په توګه عیارېږي.
         const normalizedRoleData = roleData.role === 'superadmin' && roleData.active == null ? { ...roleData, active: true } : roleData;
-        setFirebaseRole(normalizedRoleData.role || 'user');
-        setFirebaseRoleData(normalizedRoleData);
+        setCloudflareRole(normalizedRoleData.role || 'user');
+        setCloudflareRoleData(normalizedRoleData);
         const roleLabels = { superadmin: 'ستر اډمین', admin: 'عمومي اډمین', sectionAdmin: 'د برخې اډمین', uploader: 'اپلوډر', user: 'عادي کارن' };
-        setFirebaseStatus(`حساب وصل دی — ${roleLabels[roleData.role] || 'عادي کارن'}`);
+        setCloudflareStatus(`حساب وصل دی — ${roleLabels[roleData.role] || 'عادي کارن'}`);
       }, error => {
         console.error('Role listener error:', error);
-        setFirebaseStatus('حساب وصل دی، خو د اجازې معلومات ونه لوستل شول. د Firebase قواعد وګورئ.');
+        setCloudflareStatus('حساب وصل دی، خو د اجازې معلومات ونه لوستل شول. د Cloudflare Worker او D1 تنظیمات وګورئ.');
       });
     });
     return () => { unsubscribe(); if (roleUnsubscribe) roleUnsubscribe(); };
@@ -853,17 +851,17 @@ export default function App() {
     uploader: ['upload','createContent'], user: []
   };
   function hasPermission(permission) {
-    if (firebaseRole === 'superadmin') return true;
-    const assigned = firebaseRoleData?.permissions;
+    if (cloudflareRole === 'superadmin') return true;
+    const assigned = cloudflareRoleData?.permissions;
     if (assigned && Object.prototype.hasOwnProperty.call(assigned, permission)) return assigned[permission] === true;
-    return (DEFAULT_ROLE_PERMISSIONS[firebaseRole] || []).includes(permission);
+    return (DEFAULT_ROLE_PERMISSIONS[cloudflareRole] || []).includes(permission);
   }
-  const isGlobalAdmin = ['superadmin', 'admin'].includes(firebaseRole);
+  const isGlobalAdmin = ['superadmin', 'admin'].includes(cloudflareRole);
   const isReviewer = hasPermission('review');
 
   useEffect(() => {
-    if (firebaseUser && isReviewer) loadPendingLessons();
-  }, [firebaseUser, firebaseRole, firebaseRoleData]);
+    if (cloudflareUser && isReviewer) loadPendingLessons();
+  }, [cloudflareUser, cloudflareRole, cloudflareRoleData]);
 
   async function workerAdminCall(action, data = {}) {
     if (!auth.currentUser) throw new Error('لومړی خپل حساب ته ننوځئ.');
@@ -887,39 +885,39 @@ export default function App() {
       const result = await workerAdminCall('listPendingLessons');
       const rows = Array.isArray(result.lessons) ? result.lessons : [];
       setPendingLessons(rows);
-      setFirebaseStatus(`د انتظار درسونو لېست تازه شو؛ ${rows.length} درسونه وموندل شول.`);
+      setCloudflareStatus(`د انتظار درسونو لېست تازه شو؛ ${rows.length} درسونه وموندل شول.`);
     } catch (error) {
       console.error('Pending lesson callable error:', error);
       const code = error?.code ? String(error.code) : 'unknown';
       const message = error?.message || 'ناپېژندل شوې ستونزه';
-      setFirebaseStatus(`د انتظار درسونو لېست ونه لوستل شو (${code}): ${message}`);
+      setCloudflareStatus(`د انتظار درسونو لېست ونه لوستل شو (${code}): ${message}`);
     }
   }
 
 
   async function loadManagedUsers() {
-    if (!auth.currentUser || firebaseRole !== 'superadmin') return;
+    if (!auth.currentUser || cloudflareRole !== 'superadmin') return;
     try {
-      setFirebaseBusy(true);
+      setCloudflareBusy(true);
       const result = await workerAdminCall('listUserRoles');
       setManagedUsers(Array.isArray(result.users) ? result.users : []);
     } catch (error) {
       console.error('Managed users load error:', error);
       Alert.alert('د حسابونو ستونزه', error?.message || 'د کارنانو لېست ونه لوستل شو.');
-    } finally { setFirebaseBusy(false); }
+    } finally { setCloudflareBusy(false); }
   }
 
   async function changeManagedUserStatus(user, active) {
-    if (firebaseRole !== 'superadmin') return;
+    if (cloudflareRole !== 'superadmin') return;
     try {
-      setFirebaseBusy(true);
+      setCloudflareBusy(true);
       await workerAdminCall('setUserRoleStatus', { uid: user.uid, active });
       await loadManagedUsers();
       Alert.alert('بشپړ شو', active ? 'حساب فعال شو.' : 'حساب بند شو.');
     } catch (error) {
       console.error('Account status update error:', error);
       Alert.alert('بدلون ونه شو', error?.message || 'د حساب حالت بدل نه شو.');
-    } finally { setFirebaseBusy(false); }
+    } finally { setCloudflareBusy(false); }
   }
 
   function editManagedUser(user) {
@@ -938,26 +936,26 @@ export default function App() {
       setAuditLogs(snapshot.docs.map(row => ({ id: row.id, ...row.data() })));
     } catch (error) {
       console.error('Audit log load error:', error);
-      Alert.alert('د ثبتونو ستونزه', 'د فعالیتونو تاریخچه ونه لوستل شوه. د Firestore Rules وګورئ.');
+      Alert.alert('د ثبتونو ستونزه', 'د فعالیتونو تاریخچه ونه لوستل شوه. د Cloudflare D1 او Worker تنظیمات وګورئ.');
     }
   }
 
-  async function assignFirebaseRole() {
-    if (firebaseRole !== 'superadmin') { Alert.alert('اجازه نشته', 'د کارنانو او رولونو اداره یوازې ستر اډمین کولی شي.'); return; }
-    if (firebaseRole === 'admin' && ['superadmin', 'admin'].includes(newRoleType)) { Alert.alert('اجازه نشته', 'عمومي اډمین بل عمومي اډمین یا ستر اډمین نه شي ټاکلی.'); return; }
+  async function assignCloudflareRole() {
+    if (cloudflareRole !== 'superadmin') { Alert.alert('اجازه نشته', 'د کارنانو او رولونو اداره یوازې ستر اډمین کولی شي.'); return; }
+    if (cloudflareRole === 'admin' && ['superadmin', 'admin'].includes(newRoleType)) { Alert.alert('اجازه نشته', 'عمومي اډمین بل عمومي اډمین یا ستر اډمین نه شي ټاکلی.'); return; }
     const email = String(newRoleEmail || '').trim().toLowerCase();
     if (!email) { Alert.alert('ایمیل اړین دی', 'د هغه کس ایمیل ولیکئ چې رول ورکوئ.'); return; }
     const folderKeys = ['superadmin','admin'].includes(newRoleType) ? [] : String(newRoleFolders || '').split(/[\n,،]+/).map(value => value.trim()).filter(Boolean);
     const sectionKeys = ['superadmin','admin'].includes(newRoleType) ? [] : String(newRoleSections || '').split(/[\n,،]+/).map(value => value.trim()).filter(Boolean);
     try {
-      setFirebaseBusy(true);
+      setCloudflareBusy(true);
       await workerAdminCall('setUserRoleByEmail', { email, role: newRoleType, folderKeys, sectionKeys, permissions: newRolePermissions });
       setNewRoleEmail(''); setNewRoleFolders(''); setNewRoleSections(''); setNewRolePermissions({});
       Alert.alert('بریالی شو', 'د کارن رول او ټاکل شوې اجازې ثبت شوې.');
     } catch (error) {
       console.error('Role assignment error:', error);
       Alert.alert('رول ونه ټاکل شو', error?.message || 'د رول ټاکلو پر مهال ستونزه رامنځته شوه.');
-    } finally { setFirebaseBusy(false); }
+    } finally { setCloudflareBusy(false); }
   }
 
   async function reviewPendingLesson(lessonId, decision) {
@@ -965,7 +963,7 @@ export default function App() {
     if (decision === 'forward' && hasPermission('publish')) return;
     if (['approve','reject'].includes(decision) && !hasPermission('publish')) return;
     try {
-      setFirebaseBusy(true);
+      setCloudflareBusy(true);
       const reviewResult = await workerAdminCall('reviewPendingLesson', { lessonId, decision });
       if (decision === 'reject' && Array.isArray(reviewResult.cleanupMediaIds)) {
         const token = await auth.currentUser.getIdToken();
@@ -981,14 +979,14 @@ export default function App() {
     } catch (error) {
       console.error('Lesson review error:', error);
       Alert.alert('ستونزه', error?.message || 'د درس د بیاکتنې پر مهال ستونزه رامنځته شوه.');
-    } finally { setFirebaseBusy(false); }
+    } finally { setCloudflareBusy(false); }
   }
 
   function uploaderCanUseFolder(section, folder) {
-    if (firebaseRole === 'superadmin' || (firebaseRole === 'admin' && hasPermission('upload'))) return true;
+    if (cloudflareRole === 'superadmin' || (cloudflareRole === 'admin' && hasPermission('upload'))) return true;
     if (!hasPermission('upload')) return false;
-    const sectionKeys = Array.isArray(firebaseRoleData?.sectionKeys) ? firebaseRoleData.sectionKeys : [];
-    const folderKeys = Array.isArray(firebaseRoleData?.folderKeys) ? firebaseRoleData.folderKeys : [];
+    const sectionKeys = Array.isArray(cloudflareRoleData?.sectionKeys) ? cloudflareRoleData.sectionKeys : [];
+    const folderKeys = Array.isArray(cloudflareRoleData?.folderKeys) ? cloudflareRoleData.folderKeys : [];
     return sectionKeys.includes(section) || folderKeys.includes(`${section}::${folder}`);
   }
 
@@ -1019,7 +1017,7 @@ export default function App() {
       if (!size) throw new Error('د فایل اندازه ونه پېژندل شوه.');
       if (size > 100 * 1024 * 1024) throw new Error('د فایل اندازه له ۱۰۰ MB څخه زیاته ده؛ مهرباني وکړئ فایل کوچنی یا په برخو ووېشئ.');
       const mimeType = file.mimeType || 'application/octet-stream';
-      uploadStage = 'په Firebase کې د فایل معلومات ثبتول';
+      uploadStage = 'په Cloudflare D1 کې د فایل معلومات ثبتول';
       await setDoc(mediaRef, {
         mediaId, ownerUid: uid, itemId: String(itemId), section, folder, mediaType,
         fileName, mimeType, size, storagePath, status: 'pending',
@@ -1056,9 +1054,9 @@ export default function App() {
 
   function canEditContentInFolder(section, folder) {
     if (!hasPermission('editContent')) return false;
-    if (['superadmin','admin'].includes(firebaseRole)) return true;
-    const sectionKeys = Array.isArray(firebaseRoleData?.sectionKeys) ? firebaseRoleData.sectionKeys : [];
-    const folderKeys = Array.isArray(firebaseRoleData?.folderKeys) ? firebaseRoleData.folderKeys : [];
+    if (['superadmin','admin'].includes(cloudflareRole)) return true;
+    const sectionKeys = Array.isArray(cloudflareRoleData?.sectionKeys) ? cloudflareRoleData.sectionKeys : [];
+    const folderKeys = Array.isArray(cloudflareRoleData?.folderKeys) ? cloudflareRoleData.folderKeys : [];
     if (!sectionKeys.length && !folderKeys.length) return true;
     return sectionKeys.includes(section) || folderKeys.includes(`${section}::${folder}`);
   }
@@ -1068,7 +1066,7 @@ export default function App() {
     const section = item.section || selectedSection;
     const folder = item.folder || selectedFolder;
     if (!uploaderCanUseFolder(section, folder) && !canEditContentInFolder(section, folder)) throw new Error('ستاسو حساب دې برخې/فولډر ته د درس د سپارلو یا اصلاح اجازه نه لري.');
-    setFirebaseBusy(true);
+    setCloudflareBusy(true);
     const audioTracks = [];
     const attachments = [];
     const coverFiles = [];
@@ -1104,7 +1102,7 @@ export default function App() {
       const allFiles = [...audioTracks, ...attachments, ...(pdfFile ? [pdfFile] : []), ...coverFiles];
       const mediaIds = [...new Set(allFiles.filter(file => file?.mediaId && file?.storagePath && file?.reviewStatus === 'pending').map(file => file.mediaId))];
       if (mediaIds.length > 50) throw new Error('په یوه درس کې تر ۵۰ ډېر فایلونه مه پورته کوئ؛ درسونه په څو برخو ووېشئ.');
-      if (firebaseRole === 'uploader' && mediaIds.length === 0) {
+      if (cloudflareRole === 'uploader' && mediaIds.length === 0) {
         throw new Error('د اپلوډر لپاره لږ تر لږه یو نوی MP3 یا PDF فایل اړین دی.');
       }
       const pendingUri = file => file?.reviewStatus === 'pending' && file?.storagePath ? file.storagePath : file?.uri;
@@ -1125,7 +1123,7 @@ export default function App() {
         status: 'pending', mediaIds, updatedAt: serverTimestamp()
       });
       if (isReviewer) await loadPendingLessons();
-      setFirebaseStatus(`«${item.title || 'نوی درس'}» د تایید په تمه آنلاین ثبت شو.`);
+      setCloudflareStatus(`«${item.title || 'نوی درس'}» د تایید په تمه آنلاین ثبت شو.`);
       // په همدې موبایل کې اصلي محلي فایلونه ساتل کېږي؛ عام URL د تایید وروسته راځي.
       return { ...item, audioTracks, attachments, mediaIds, pdfCoverMediaId: pdfCoverFile?.mediaId || item.pdfCoverMediaId || '', pdfCoverStoragePath: pdfCoverFile?.storagePath || item.pdfCoverStoragePath || '', cloudReviewStatus: 'pending' };
     } catch (error) {
@@ -1141,7 +1139,7 @@ export default function App() {
       try { await deleteDoc(doc(db, 'pendingLessons', pendingId)); } catch (cleanupError) {}
       throw error;
     } finally {
-      setFirebaseBusy(false);
+      setCloudflareBusy(false);
     }
   }
 
@@ -1174,8 +1172,8 @@ export default function App() {
     }
   }
 
-  // عام کاروونکي ته د Firebase Authentication حساب ته اړتیا نشته:
-  // publishedLessons د Firestore Rules له مخې عامه لوستلو ته اجازه لري.
+  // عام کاروونکي ته د آنلاین عامو موادو لپاره حساب ته اړتیا نشته:
+  // publishedLessons د Cloudflare Worker له مخې عامه لوستلو ته اجازه لري.
   // د اپلیکیشن له پیل سره ټول خپاره شوي درسونه اخلو، څو په نوي موبایل کې
   // تش محلي کتابتون د آنلاین کتابتون د نه شتون سبب نه شي.
   async function syncAllPublishedLessons(force = false) {
@@ -1232,13 +1230,9 @@ export default function App() {
   }, [loading, screen, selectedSection, selectedFolder, selectedFolderParent]);
 
   async function bootstrapMySuperAdminAccess() {
-    const OWNER_UID = 'CtaXP0WGrFfusIKSsMFYP4ZKb6P2';
-    if (!auth.currentUser || auth.currentUser.uid !== OWNER_UID) {
-      Alert.alert('اجازه نشته', 'دا تنظیم یوازې د پروژې د تایید شوي مالک حساب ترسره کولای شي.');
-      return;
-    }
+    if (!auth.currentUser) { Alert.alert('اجازه نشته', 'لومړی خپل حساب ته ننوځئ.'); return; }
     try {
-      setFirebaseBusy(true);
+      setCloudflareBusy(true);
       const token = await auth.currentUser.getIdToken(true);
       const response = await fetch(`${MEDIA_WORKER_URL}/bootstrap/superadmin`, {
         method: 'POST',
@@ -1250,7 +1244,7 @@ export default function App() {
         const detail = [result.error, result.detail].filter(Boolean).join(' — ');
         throw new Error(detail || `د Super Admin تنظیم ناکام شو (${response.status})`);
       }
-      setFirebaseStatus('د ستر اډمین واک په بریالیتوب ثبت شو؛ د حساب معلومات تازه کېږي.');
+      setCloudflareStatus('د ستر اډمین واک په بریالیتوب ثبت شو؛ د حساب معلومات تازه کېږي.');
       Alert.alert('بریالی شو', result.alreadyConfigured
         ? 'دا حساب له مخکې ستر اډمین دی.'
         : 'ستا حساب د ستر اډمین په توګه فعال شو. څو شېبې انتظار وکړه چې اجازه تازه شي.');
@@ -1258,60 +1252,60 @@ export default function App() {
       console.error('Super Admin bootstrap error:', error);
       Alert.alert('د ستر اډمین ستونزه', error?.message || 'د ستر اډمین واک ثبت نه شو.');
     } finally {
-      setFirebaseBusy(false);
+      setCloudflareBusy(false);
     }
   }
 
-  async function firebaseAdminLogin() {
-    if (!firebaseEmail.trim() || !firebasePassword) {
+  async function cloudflareAdminLogin() {
+    if (!cloudflareEmail.trim() || !cloudflarePassword) {
       Alert.alert('اړین معلومات', 'د مدیر یا اپلوډر ایمیل او پاسورډ ولیکئ.');
       return;
     }
     try {
-      setFirebaseBusy(true);
-      await signInWithEmailAndPassword(auth, firebaseEmail.trim(), firebasePassword);
-      setFirebasePassword('');
-      Alert.alert('بریالی', 'حساب له Firebase سره وصل شو؛ اجازه به یې د ټاکل شوي رول له مخې وټاکل شي.');
+      setCloudflareBusy(true);
+      await signInWithEmailAndPassword(auth, cloudflareEmail.trim(), cloudflarePassword);
+      setCloudflarePassword('');
+      Alert.alert('بریالی', 'حساب Cloudflare حساب ته ننوتل بریالي شول؛ اجازه به یې د ټاکل شوي رول له مخې وټاکل شي.');
     } catch (error) {
-      console.error('Firebase login error:', error);
-      Alert.alert('د ننوتلو ستونزه', 'ایمیل یا پاسورډ سم نه دی، یا د Firebase Authentication تنظیمات بشپړ نه دي.');
+      console.error('Cloudflare login error:', error);
+      Alert.alert('د ننوتلو ستونزه', 'ایمیل یا پاسورډ سم نه دی، یا د Cloudflare Worker یا D1 تنظیمات بشپړ نه دي.');
     } finally {
-      setFirebaseBusy(false);
+      setCloudflareBusy(false);
     }
   }
 
-  async function firebaseAdminLogout() {
+  async function cloudflareAdminLogout() {
     try {
       await signOut(auth);
-      setFirebaseStatus('له Firebase څخه وتل وشول.');
+      setCloudflareStatus('له Cloudflare څخه وتل وشول.');
     } catch (error) {
-      Alert.alert('ستونزه', 'له Firebase څخه وتل بریالي نه شول.');
+      Alert.alert('ستونزه', 'له Cloudflare څخه وتل بریالي نه شول.');
     }
   }
 
   // یوازې د ګډ علمي کتابتون معلومات همغږي کېږي؛ شخصي نوټونه، خوښې او د زده کړې پرمختګ نه پورته کېږي.
-  const FIREBASE_LIBRARY_KEYS = [
+  const CLOUDFLARE_LIBRARY_KEYS = [
     STORAGE.books, STORAGE.global, STORAGE.adhkar, STORAGE.sitta,
     STORAGE.scholarNames, STORAGE.folderAdmin, STORAGE.sharedResources,
     STORAGE.customSittaBooks, STORAGE.scholarTaxonomy
   ];
 
-  async function uploadLibraryToFirebase() {
+  async function uploadLibraryToCloudflare() {
     if (!auth.currentUser || !hasPermission('manageLibrary')) {
       Alert.alert('اجازه نشته', 'ستاسو حساب د عمومي کتابتون د مدیریت اجازه نه لري.');
       return;
     }
     Alert.alert(
       'آنلاین کتابتون ته لېږل',
-      'د دې موبایل د ګډ کتابتون معلومات به Firebase ته پورته شي. شخصي نوټونه، خوښې او د زده کړې پرمختګ نه پورته کېږي. د آډیو او PDF اصلي فایلونه هم په دې پړاو کې نه پورته کېږي. دوام ورکړو؟',
+      'د دې موبایل د ګډ کتابتون معلومات به Cloudflare ته پورته شي. شخصي نوټونه، خوښې او د زده کړې پرمختګ نه پورته کېږي. د آډیو او PDF اصلي فایلونه هم په دې پړاو کې نه پورته کېږي. دوام ورکړو؟',
       [
         { text: 'لغوه', style: 'cancel' },
         { text: 'هو، پورته یې کړه', onPress: async () => {
           try {
-            setFirebaseBusy(true);
-            setFirebaseStatus('د کتابتون معلومات چمتو کېږي...');
-            const manifest = { schemaVersion: 1, projectId: 'islamic-university-27d8f', updatedAt: new Date().toISOString(), updatedBy: auth.currentUser.uid, keys: FIREBASE_LIBRARY_KEYS, chunkCounts: {} };
-            for (const key of FIREBASE_LIBRARY_KEYS) {
+            setCloudflareBusy(true);
+            setCloudflareStatus('د کتابتون معلومات چمتو کېږي...');
+            const manifest = { schemaVersion: 1, projectId: 'mirath-islam-cloudflare', updatedAt: new Date().toISOString(), updatedBy: auth.currentUser.uid, keys: CLOUDFLARE_LIBRARY_KEYS, chunkCounts: {} };
+            for (const key of CLOUDFLARE_LIBRARY_KEYS) {
               const raw = await AsyncStorage.getItem(key);
               let value = raw == null ? 'null' : raw;
               if (key === STORAGE.global && raw != null) {
@@ -1326,39 +1320,39 @@ export default function App() {
               }
             }
             await setDoc(doc(db, 'library_sync_v1', 'manifest'), manifest);
-            setFirebaseStatus(`کتابتون آنلاین خوندي شو: ${new Date().toLocaleString()}`);
-            Alert.alert('بریالی', 'د کتابتون معلومات Firebase ته پورته شول. آډیو او PDF اصلي فایلونه په دې پړاو کې نه دي پورته شوي.');
+            setCloudflareStatus(`کتابتون آنلاین خوندي شو: ${new Date().toLocaleString()}`);
+            Alert.alert('بریالی', 'د کتابتون معلومات Cloudflare ته پورته شول. آډیو او PDF اصلي فایلونه په دې پړاو کې نه دي پورته شوي.');
           } catch (error) {
-            console.error('Firebase upload error:', error);
-            Alert.alert('اپلوډ ناکام شو', 'له Firebase سره د معلوماتو د لېږلو ستونزه رامنځته شوه. انټرنېټ او امنیتي قواعد وګورئ.');
+            console.error('Cloudflare upload error:', error);
+            Alert.alert('اپلوډ ناکام شو', 'Cloudflare Worker ته د معلوماتو لېږلو ستونزه رامنځته شوه. انټرنېټ او D1 تنظیمات وګورئ.');
           } finally {
-            setFirebaseBusy(false);
+            setCloudflareBusy(false);
           }
         }}
       ]
     );
   }
 
-  async function restoreLibraryFromFirebase() {
+  async function restoreLibraryFromCloudflare() {
     if (!auth.currentUser || !hasPermission('manageLibrary')) {
       Alert.alert('اجازه نشته', 'ستاسو حساب د عمومي کتابتون د بیا راوستلو اجازه نه لري.');
       return;
     }
     Alert.alert(
       'له آنلاین کتابتون څخه بیا راوستل',
-      'دا کار به د دې موبایل اوسني ګډ کتابتون معلومات د Firebase له نسخې سره بدل کړي. مخکې له دوام څخه د ZIP بیک‌اپ لرل اړین دي. شخصي نوټونه او خوښې به نه بدلېږي.',
+      'دا کار به د دې موبایل اوسني ګډ کتابتون معلومات د Cloudflare له نسخې سره بدل کړي. مخکې له دوام څخه د ZIP بیک‌اپ لرل اړین دي. شخصي نوټونه او خوښې به نه بدلېږي.',
       [
         { text: 'لغوه', style: 'cancel' },
         { text: 'هو، بیا یې راوړه', style: 'destructive', onPress: async () => {
           try {
-            setFirebaseBusy(true);
+            setCloudflareBusy(true);
             const manifestSnap = await getDoc(doc(db, 'library_sync_v1', 'manifest'));
             if (!manifestSnap.exists()) throw new Error('No cloud library manifest');
             const manifest = manifestSnap.data();
-            if (manifest.projectId !== 'islamic-university-27d8f') throw new Error('Cloud project mismatch');
+            if (manifest.projectId !== 'mirath-islam-cloudflare') throw new Error('Cloud project mismatch');
             const pairs = [];
             for (const key of (manifest.keys || [])) {
-              if (!FIREBASE_LIBRARY_KEYS.includes(key)) continue;
+              if (!CLOUDFLARE_LIBRARY_KEYS.includes(key)) continue;
               const count = Number(manifest.chunkCounts?.[key] || 0);
               if (!count || count > 10000) throw new Error('Invalid chunk count');
               let raw = '';
@@ -1375,13 +1369,13 @@ export default function App() {
             if (!validPairs.length) throw new Error('No library data to restore');
             await AsyncStorage.multiSet(validPairs);
             await loadAllData();
-            setFirebaseStatus(`آنلاین کتابتون بېرته راوستل شو: ${manifest.updatedAt || ''}`);
+            setCloudflareStatus(`آنلاین کتابتون بېرته راوستل شو: ${manifest.updatedAt || ''}`);
             Alert.alert('بشپړ شو', 'د آنلاین کتابتون معلومات دې موبایل ته راوستل شول. که د آډیو یا PDF فایلونه په دې موبایل کې نه وي، د هغوی فایلونه به لا جلا انتقال ته اړتیا ولري.');
           } catch (error) {
-            console.error('Firebase restore error:', error);
+            console.error('Cloudflare restore error:', error);
             Alert.alert('بیا راوستل ناکام شول', 'آنلاین معلومات بشپړ نه شول راوستل کېدای. د موبایل اوسني معلومات مو نه دي پاک شوي.');
           } finally {
-            setFirebaseBusy(false);
+            setCloudflareBusy(false);
           }
         }}
       ]
@@ -1495,7 +1489,7 @@ export default function App() {
 
     setSettings(updated);
     await saveData(STORAGE.settings, updated);
-    if (firebaseUser && hasPermission('editSettings') && ['headingColor', 'textColor', 'fontFamily'].some(key => Object.prototype.hasOwnProperty.call(newSettings, key))) {
+    if (cloudflareUser && hasPermission('editSettings') && ['headingColor', 'textColor', 'fontFamily'].some(key => Object.prototype.hasOwnProperty.call(newSettings, key))) {
       try {
         await setDoc(doc(db, 'appConfig', 'public'), {
           visualSettings: {
@@ -1503,7 +1497,7 @@ export default function App() {
             textColor: updated.textColor,
             fontFamily: updated.fontFamily
           },
-          updatedBy: firebaseUser.uid,
+          updatedBy: cloudflareUser.uid,
           updatedAt: serverTimestamp()
         }, { merge: true });
       } catch (error) { console.warn('Global visual settings sync failed:', error?.message || error); }
@@ -1543,7 +1537,7 @@ export default function App() {
   }
 
   async function updateHomeDesign(patch, folderKey = null) {
-    if (firebaseUser && !hasPermission('editSettings')) {
+    if (cloudflareUser && !hasPermission('editSettings')) {
       Alert.alert('اجازه نشته', 'ستاسو حساب د عمومي ډیزاین د بدلولو اجازه نه لري.');
       return;
     }
@@ -1561,11 +1555,11 @@ export default function App() {
       next = { ...current, ...patch };
     }
     await updateSettings({ homeDesign: next });
-    if (firebaseUser && hasPermission('editSettings')) {
+    if (cloudflareUser && hasPermission('editSettings')) {
       try {
         await setDoc(doc(db, 'appConfig', 'public'), {
           homeDesign: next,
-          updatedBy: firebaseUser.uid,
+          updatedBy: cloudflareUser.uid,
           updatedAt: serverTimestamp()
         }, { merge: true });
       } catch (error) { Alert.alert('د نړیوال ډیزاین ستونزه', 'ډیزاین په دې موبایل کې خوندي شو، خو نړیوال تنظیم ته ونه لېږل شو.'); }
@@ -2658,15 +2652,15 @@ export default function App() {
   }
 
   async function addGlobalItem() {
-    if (firebaseUser && !hasPermission(editingGlobalItemId ? 'editContent' : 'createContent')) {
+    if (cloudflareUser && !hasPermission(editingGlobalItemId ? 'editContent' : 'createContent')) {
       Alert.alert('اجازه نشته', 'دا حساب د علمي درسونو د ثبت یا اصلاح اجازه نه لري.');
       return;
     }
-    if (firebaseUser && firebaseRole === 'sectionAdmin' && !uploaderCanUseFolder(selectedSection, selectedFolder)) {
+    if (cloudflareUser && cloudflareRole === 'sectionAdmin' && !uploaderCanUseFolder(selectedSection, selectedFolder)) {
       Alert.alert('اجازه نشته', 'تاسو یوازې خپلې ټاکل شوې علمي برخې کې درس ثبتولای شئ.');
       return;
     }
-    if (firebaseUser && editingGlobalItemId && !hasPermission('editContent')) {
+    if (cloudflareUser && editingGlobalItemId && !hasPermission('editContent')) {
       Alert.alert('اجازه نشته', 'ستاسو حساب د موجود درس د اصلاح اجازه نه لري.');
       return;
     }
@@ -2741,7 +2735,7 @@ export default function App() {
 
     if (screen === 'arabicBookEditor') {
       const existingBook = editingGlobalItemId ? globalItems.find(item => item.id === editingGlobalItemId) : null;
-      if (firebaseRole === 'uploader' && existingBook) {
+      if (cloudflareRole === 'uploader' && existingBook) {
         Alert.alert('اجازه نشته', 'اپلوډر یوازې نوی درس/کتاب سپارلی شي؛ د موجودو خپرو شویو موادو سمون د لوی مدیر کار دی.');
         return;
       }
@@ -2928,7 +2922,7 @@ export default function App() {
   }
 
   async function deleteGlobalItem(id) {
-    if (firebaseUser && !hasPermission('deleteContent')) { Alert.alert('اجازه نشته', 'ستاسو حساب د درس د حذف اجازه نه لري.'); return; }
+    if (cloudflareUser && !hasPermission('deleteContent')) { Alert.alert('اجازه نشته', 'ستاسو حساب د درس د حذف اجازه نه لري.'); return; }
     Alert.alert('د درس حذف', 'ایا دا درس حذف کول غواړئ؟', [
       { text: 'نه', style: 'cancel' },
       {
@@ -3054,7 +3048,7 @@ export default function App() {
         const cleanBase = safeName.replace(/\.[^.]+$/, '');
         destination = `${directory}${cleanBase}_${Date.now()}${extension}`;
       }
-      setFirebaseStatus('فایل د افلاین کارونې لپاره ډاونلوډ کېږي...');
+      setCloudflareStatus('فایل د افلاین کارونې لپاره ډاونلوډ کېږي...');
       const result = existingOffline ? { uri: existingOffline, status: 200 } : await FileSystem.downloadAsync(remoteUri, destination);
       if (result.status < 200 || result.status >= 300) throw new Error(`HTTP ${result.status}`);
       const raw = await AsyncStorage.getItem(STORAGE.offlineMedia);
@@ -3076,7 +3070,7 @@ export default function App() {
         } catch (coverError) { console.warn('Offline cover download skipped:', coverError?.message || coverError); }
       }
       await AsyncStorage.setItem(STORAGE.offlineMedia, JSON.stringify(saved));
-      setFirebaseStatus('فایل په دې موبایل کې د افلاین کارونې لپاره خوندي شو.');
+      setCloudflareStatus('فایل په دې موبایل کې د افلاین کارونې لپاره خوندي شو.');
       Alert.alert('ډاونلوډ بشپړ شو', 'دا فایل اوس له انټرنېټ پرته هم پرانیستل کېدای شي.');
       return result.uri;
     } catch (error) {
@@ -4150,7 +4144,7 @@ export default function App() {
   // ==================================================
 
   async function saveSittaData(updated) {
-    if (firebaseUser && !hasPermission('editContent')) { Alert.alert('اجازه نشته', 'ستاسو حساب د حدیثي کتابتون د اصلاح اجازه نه لري.'); return false; }
+    if (cloudflareUser && !hasPermission('editContent')) { Alert.alert('اجازه نشته', 'ستاسو حساب د حدیثي کتابتون د اصلاح اجازه نه لري.'); return false; }
     setSittaData(updated);
     await saveData(STORAGE.sitta, updated);
   }
@@ -5621,14 +5615,14 @@ export default function App() {
   }
 
   async function saveFolderAdmin(next) {
-    if (firebaseUser && !hasPermission('editContent')) {
+    if (cloudflareUser && !hasPermission('editContent')) {
       Alert.alert('اجازه نشته', 'ستاسو حساب د فولډرونو او کټګوریو د بدلون اجازه نه لري.');
       return false;
     }
     setFolderAdmin(next);
     await saveData(STORAGE.folderAdmin, next);
-    if (firebaseUser && hasPermission('editContent')) {
-      try { await setDoc(doc(db, 'appConfig', 'public'), { folderAdmin: next, updatedBy: firebaseUser.uid, updatedAt: serverTimestamp() }, { merge: true }); }
+    if (cloudflareUser && hasPermission('editContent')) {
+      try { await setDoc(doc(db, 'appConfig', 'public'), { folderAdmin: next, updatedBy: cloudflareUser.uid, updatedAt: serverTimestamp() }, { merge: true }); }
       catch (error) { Alert.alert('د فولډرونو د همغږۍ ستونزه', 'فولډرونه په دې موبایل کې خوندي شول، خو نړیوال تنظیم ته ونه لېږل شول.'); }
     }
   }
@@ -5769,14 +5763,14 @@ export default function App() {
   }
 
   async function addScholarFolder() {
-    if (firebaseUser && !hasPermission('editContent')) { Alert.alert('اجازه نشته', 'ستاسو حساب د علماوو د لېست د بدلولو اجازه نه لري.'); return; }
+    if (cloudflareUser && !hasPermission('editContent')) { Alert.alert('اجازه نشته', 'ستاسو حساب د علماوو د لېست د بدلولو اجازه نه لري.'); return; }
     const name = newScholarName.trim();
     if (!name) { Alert.alert('خبرتیا', 'د عالم نوم ولیکئ.'); return; }
     const updated = [...new Set([...scholarNames, name])];
     setScholarNames(updated);
     await saveData(STORAGE.scholarNames, updated);
-    if (firebaseUser && hasPermission('editContent')) {
-      try { await setDoc(doc(db, 'appConfig', 'public'), { scholarNames: updated, updatedBy: firebaseUser.uid, updatedAt: serverTimestamp() }, { merge: true }); }
+    if (cloudflareUser && hasPermission('editContent')) {
+      try { await setDoc(doc(db, 'appConfig', 'public'), { scholarNames: updated, updatedBy: cloudflareUser.uid, updatedAt: serverTimestamp() }, { merge: true }); }
       catch (error) { Alert.alert('د علماوو د لېست ستونزه', 'نومونه په دې موبایل کې خوندي شول، خو نړیوال تنظیم ته ونه لېږل شول.'); }
     }
     ensureScholarTaxonomy(name);
@@ -8275,40 +8269,40 @@ export default function App() {
               <GoldButton title={backupBusy ? 'مهرباني وکړئ انتظار...' : '⬇ بشپړ ZIP بیک‌اپ بېرته راوستل'} secondary onPress={importManualBackup} />
             </View>}
 
-            {(!settingsSearch || ['firebase','آنلاین','فایربېس','کلاوډ','cloud','مدیر','اپلوډر'].some(word => settingsSearch.trim().toLowerCase().includes(word) || word.includes(settingsSearch.trim().toLowerCase()))) && <View style={styles.formCard}>
-              <Text style={[styles.cardHeading, { color: settings.headingColor }]}>د Firebase آنلاین کتابتون او د کارن اجازې</Text>
-              <Text style={styles.smallMuted}>پروژه: islamic-university-27d8f</Text>
-              <Text style={[styles.smallMuted, { marginTop: 6 }]}>{firebaseStatus || 'د مدیر یا اپلوډر حساب له لارې ننوتل وکړئ.'}</Text>
-              {firebaseUser ? <>
-                <Text style={[styles.fileSelected, { marginTop: 8 }]}>اوسنی رول: {({ superadmin: 'ستر اډمین', admin: 'عمومي اډمین', sectionAdmin: 'د برخې اډمین', uploader: 'د موادو اپلوډر', user: 'عادي کارن' })[firebaseRole] || 'لا نه دی ټاکل شوی'}</Text>
-                <Text style={styles.smallMuted}>Firebase UID: {firebaseUser.uid} · فعال: {firebaseRoleData?.active === true ? 'هو' : 'نه'}</Text>
-                {firebaseUser.uid === 'CtaXP0WGrFfusIKSsMFYP4ZKb6P2' && firebaseRole !== 'superadmin' ? <>
-                  <Text style={[styles.smallMuted, { marginTop: 8 }]}>دا د پروژې د مالک تایید شوی حساب دی؛ د لومړي ځل لپاره د ستر اډمین واک دلته فعالولای شې.</Text>
-                  <GoldButton title={firebaseBusy ? 'اجازه ثبتېږي...' : '★ زما حساب د ستر اډمین په توګه فعال کړه'} onPress={bootstrapMySuperAdminAccess} />
+            {(!settingsSearch || ['cloudflare','آنلاین','کلاوډ','cloud','مدیر','اپلوډر'].some(word => settingsSearch.trim().toLowerCase().includes(word) || word.includes(settingsSearch.trim().toLowerCase()))) && <View style={styles.formCard}>
+              <Text style={[styles.cardHeading, { color: settings.headingColor }]}>د Cloudflare آنلاین کتابتون او د کارن اجازې</Text>
+              <Text style={styles.smallMuted}>Backend: Cloudflare Worker + D1 + R2</Text>
+              <Text style={[styles.smallMuted, { marginTop: 6 }]}>{cloudflareStatus || 'د مدیر یا اپلوډر حساب له لارې ننوتل وکړئ.'}</Text>
+              {cloudflareUser ? <>
+                <Text style={[styles.fileSelected, { marginTop: 8 }]}>اوسنی رول: {({ superadmin: 'ستر اډمین', admin: 'عمومي اډمین', sectionAdmin: 'د برخې اډمین', uploader: 'د موادو اپلوډر', user: 'عادي کارن' })[cloudflareRole] || 'لا نه دی ټاکل شوی'}</Text>
+                <Text style={styles.smallMuted}>Cloudflare UID: {cloudflareUser.uid} · فعال: {cloudflareRoleData?.active === true ? 'هو' : 'نه'}</Text>
+                {cloudflareRole !== 'superadmin' ? <>
+                  <Text style={[styles.smallMuted, { marginTop: 8 }]}>که دا ایمیل د Cloudflare د BOOTSTRAP_ADMIN_EMAIL په توګه ټاکل شوی وي، دلته د ستر اډمین واک فعالولای شې.</Text>
+                  <GoldButton title={cloudflareBusy ? 'اجازه ثبتېږي...' : '★ زما حساب د ستر اډمین په توګه فعال کړه'} onPress={bootstrapMySuperAdminAccess} />
                 </> : null}
                 {hasPermission('manageLibrary') ? <>
-                  <GoldButton title={firebaseBusy ? 'مهرباني وکړئ انتظار...' : '⬆ عمومي کتابتون آنلاین ته پورته کول'} secondary onPress={uploadLibraryToFirebase} />
-                  <GoldButton title={firebaseBusy ? 'مهرباني وکړئ انتظار...' : '⬇ له آنلاین کتابتون څخه بیا راوستل'} secondary onPress={restoreLibraryFromFirebase} />
-                  {firebaseRole === 'superadmin' ? <>
+                  <GoldButton title={cloudflareBusy ? 'مهرباني وکړئ انتظار...' : '⬆ عمومي کتابتون آنلاین ته پورته کول'} secondary onPress={uploadLibraryToCloudflare} />
+                  <GoldButton title={cloudflareBusy ? 'مهرباني وکړئ انتظار...' : '⬇ له آنلاین کتابتون څخه بیا راوستل'} secondary onPress={restoreLibraryFromCloudflare} />
+                  {cloudflareRole === 'superadmin' ? <>
                   <Text style={[styles.cardHeading, { color: settings.headingColor, marginTop: 14 }]}>نوی اډمین یا کارن ټاکل</Text>
                   <TextInput value={newRoleEmail} onChangeText={setNewRoleEmail} placeholder="د کارن ایمیل" placeholderTextColor={COLORS.muted} keyboardType="email-address" autoCapitalize="none" style={styles.designColorInput} textAlign="left" />
                   <View style={{ flexDirection: 'row-reverse', flexWrap: 'wrap', gap: 7, marginTop: 8 }}>
-                    {(['superadmin', 'admin', 'sectionAdmin', 'uploader', 'user']).filter(role => firebaseRole === 'superadmin' || !['superadmin', 'admin'].includes(role)).map(role => {
+                    {(['superadmin', 'admin', 'sectionAdmin', 'uploader', 'user']).filter(role => cloudflareRole === 'superadmin' || !['superadmin', 'admin'].includes(role)).map(role => {
                       const labels = { superadmin: 'ستر اډمین', admin: 'عمومي اډمین', sectionAdmin: 'د برخې اډمین', uploader: 'اپلوډر', user: 'عادي کارن' };
                       return <GoldButton key={role} title={`${newRoleType === role ? '✓ ' : ''}${labels[role]}`} secondary onPress={() => setNewRoleType(role)} />;
                     })}
                   </View>
                   {!['superadmin','admin'].includes(newRoleType) ? <TextInput value={newRoleSections} onChangeText={setNewRoleSections} placeholder="د اجازې علمي برخې؛ هره برخه په نوې کرښه ولیکئ" placeholderTextColor={COLORS.muted} multiline style={[styles.designColorInput, { minHeight: 75, marginTop: 8 }]} textAlign="right" /> : null}
                   {!['superadmin','admin'].includes(newRoleType) ? <TextInput value={newRoleFolders} onChangeText={setNewRoleFolders} placeholder="اجازه لرونکي فولډرونه: برخه::فولډر (هر یو په نوې کرښه)" placeholderTextColor={COLORS.muted} multiline style={[styles.designColorInput, { minHeight: 68, marginTop: 8 }]} textAlign="right" /> : null}
-                  {firebaseRole === 'superadmin' ? <View style={{ marginTop: 12, padding: 10, borderWidth: 1, borderColor: COLORS.border, borderRadius: 10 }}>
+                  {cloudflareRole === 'superadmin' ? <View style={{ marginTop: 12, padding: 10, borderWidth: 1, borderColor: COLORS.border, borderRadius: 10 }}>
                     <Text style={[styles.cardHeading,{color:settings.headingColor}]}>د دې حساب ځانګړې اجازې (د رول له عمومي واکونو پرته)</Text>
                     {[['upload','فایلونه اپلوډول'],['createContent','نوي درسونه ثبتول'],['editContent','موجود درسونه او معلومات اصلاح کول'],['deleteContent','درسونه او معلومات حذفول'],['publish','درسونه تایید او خپرول'],['manageLibrary','عمومي کتابتون اپلوډ/بیا راوستل'],['editSettings','د اپ تنظیمات او ډیزاین بدلول'],['review','د درسونو کتنه'],['viewAudit','د فعالیتونو تاریخچه لیدل']].map(([key,label]) => <View key={key} style={styles.optionRow}><Text style={[styles.optionText,{color:settings.textColor}]}>{label}</Text><Switch value={newRolePermissions[key] !== undefined ? newRolePermissions[key] : (DEFAULT_ROLE_PERMISSIONS[newRoleType] || []).includes(key)} onValueChange={value => setNewRolePermissions(old => ({...old,[key]:value}))} trackColor={{false:COLORS.border,true:COLORS.green}} thumbColor={COLORS.gold}/></View>)}
                     <Text style={styles.smallMuted}>که کومه ځانګړې اجازه نه وي ټاکل شوې، د رول اصلي واکونه کارول کېږي. د Super Admin ټول واکونه تل فعال وي.</Text>
                   </View> : null}
-                  <GoldButton title={firebaseBusy ? 'ثبت کېږي...' : 'د رول اجازه ثبت کړه'} onPress={assignFirebaseRole} />
+                  <GoldButton title={cloudflareBusy ? 'ثبت کېږي...' : 'د رول اجازه ثبت کړه'} onPress={assignCloudflareRole} />
                   </> : null}
-                  {firebaseRole === 'superadmin' ? <>
-                    <Text style={[styles.cardHeading, { color: settings.headingColor, marginTop: 18 }]}>د ټولو Gmail حسابونو او اجازو مدیریت</Text>
+                  {cloudflareRole === 'superadmin' ? <>
+                    <Text style={[styles.cardHeading, { color: settings.headingColor, marginTop: 18 }]}>د ټولو ثبت شويو ایمیل حسابونو او اجازو مدیریت</Text>
                     <Text style={styles.smallMuted}>دا لېست تر ۵۰۰ ثبت شوو اداري حسابونو پورې ښيي. د هر حساب رول، حالت او ټاکل شوې علمي برخې/فولډرونه دلته کتلای شئ.</Text>
                     <GoldButton title="↻ د حسابونو لېست تازه کړه" secondary onPress={loadManagedUsers} />
                     {managedUsers.map(user => <View key={user.uid} style={{ borderTopWidth: 1, borderColor: COLORS.border, paddingVertical: 9 }}>
@@ -8319,7 +8313,7 @@ export default function App() {
                       {user.permissions && Object.keys(user.permissions).length ? <Text style={styles.smallMuted}>ځانګړې اجازې: {Object.entries(user.permissions).filter(([,v]) => v === true).map(([k]) => k).join('، ') || 'ټولې ځانګړې اجازې بندې دي'}</Text> : null}
                       <View style={{ flexDirection: 'row-reverse', flexWrap: 'wrap', gap: 7, marginTop: 6 }}>
                         <GoldButton title="اجازې سمول" secondary onPress={() => editManagedUser(user)} />
-                        {user.uid !== firebaseUser?.uid || user.role !== 'superadmin' ? <GoldButton title={user.active ? 'حساب بندول' : 'حساب فعالول'} secondary onPress={() => changeManagedUserStatus(user, !user.active)} /> : <Text style={styles.smallMuted}>اوسنی ستر اډمین</Text>}
+                        {user.uid !== cloudflareUser?.uid || user.role !== 'superadmin' ? <GoldButton title={user.active ? 'حساب بندول' : 'حساب فعالول'} secondary onPress={() => changeManagedUserStatus(user, !user.active)} /> : <Text style={styles.smallMuted}>اوسنی ستر اډمین</Text>}
                       </View>
                     </View>)}
                     {!managedUsers.length ? <Text style={styles.smallMuted}>د حسابونو لېست لا نه دی لوستل شوی؛ پورته تڼۍ کېکاږئ.</Text> : null}
@@ -8349,17 +8343,17 @@ export default function App() {
                     {row.details?.permissions ? <Text style={styles.smallMuted}>د اجازو بدلون: {Object.entries(row.details.permissions).map(([key,value]) => `${key}: ${value ? 'فعاله' : 'بنده'}`).join('، ')}</Text> : null}
                   </View>)}
                 </View> : null}
-                {firebaseRole === 'sectionAdmin' ? <Text style={styles.smallMuted}>تاسو په خپلو ټاکل شوو علمي برخو کې درسونه او فایلونه ثبتولای شئ، د هماغو برخو Pending درسونه کتلی شئ او عمومي اډمین ته یې لېږلای شئ؛ وروستی خپرول د عمومي اډمین واک دی.</Text> : null}
-                {firebaseRole === 'uploader' ? <Text style={styles.smallMuted}>تاسو یوازې خپلو ته ټاکل شوو فولډرونو ته درسونه او فایلونه پورته کولی شئ. خپرول د اډمین له تایید وروسته کېږي.</Text> : null}
-                {firebaseRole === 'user' ? <Text style={styles.smallMuted}>دا حساب د مدیریت یا اپلوډ اجازه نه لري؛ یوازې خپاره شوي مواد کارولی شي.</Text> : null}
-                <GoldButton title="له Firebase څخه وتل" secondary onPress={firebaseAdminLogout} />
+                {cloudflareRole === 'sectionAdmin' ? <Text style={styles.smallMuted}>تاسو په خپلو ټاکل شوو علمي برخو کې درسونه او فایلونه ثبتولای شئ، د هماغو برخو Pending درسونه کتلی شئ او عمومي اډمین ته یې لېږلای شئ؛ وروستی خپرول د عمومي اډمین واک دی.</Text> : null}
+                {cloudflareRole === 'uploader' ? <Text style={styles.smallMuted}>تاسو یوازې خپلو ته ټاکل شوو فولډرونو ته درسونه او فایلونه پورته کولی شئ. خپرول د اډمین له تایید وروسته کېږي.</Text> : null}
+                {cloudflareRole === 'user' ? <Text style={styles.smallMuted}>دا حساب د مدیریت یا اپلوډ اجازه نه لري؛ یوازې خپاره شوي مواد کارولی شي.</Text> : null}
+                <GoldButton title="له Cloudflare څخه وتل" secondary onPress={cloudflareAdminLogout} />
               </> : <>
-                <TextInput value={firebaseEmail} onChangeText={setFirebaseEmail} placeholder="د مدیر/اپلوډر ایمیل" placeholderTextColor={COLORS.muted} keyboardType="email-address" autoCapitalize="none" autoCorrect={false} style={[styles.designColorInput, { marginTop: 10 }]} textAlign="left" />
-                <TextInput value={firebasePassword} onChangeText={setFirebasePassword} placeholder="پاسورډ" placeholderTextColor={COLORS.muted} secureTextEntry style={[styles.designColorInput, { marginTop: 8 }]} textAlign="left" />
-                <GoldButton title={firebaseBusy ? 'نښلول کېږي...' : 'Firebase ته ننوتل'} secondary onPress={firebaseAdminLogin} />
+                <TextInput value={cloudflareEmail} onChangeText={setCloudflareEmail} placeholder="د مدیر/اپلوډر ایمیل" placeholderTextColor={COLORS.muted} keyboardType="email-address" autoCapitalize="none" autoCorrect={false} style={[styles.designColorInput, { marginTop: 10 }]} textAlign="left" />
+                <TextInput value={cloudflarePassword} onChangeText={setCloudflarePassword} placeholder="پاسورډ" placeholderTextColor={COLORS.muted} secureTextEntry style={[styles.designColorInput, { marginTop: 8 }]} textAlign="left" />
+                <GoldButton title={cloudflareBusy ? 'نښلول کېږي...' : 'Cloudflare ته ننوتل'} secondary onPress={cloudflareAdminLogin} />
               </>}
-              {firebaseBusy ? <View style={{ paddingVertical: 8, alignItems: 'center' }}><ActivityIndicator color={COLORS.gold} /><Text style={styles.smallMuted}>له آنلاین ډیټابېس سره اړیکه روانه ده...</Text></View> : null}
-              <Text style={[styles.smallMuted, { marginTop: 8 }]}>د آډیو او PDF فایلونه په Firebase Storage کې ساتل کېږي؛ د اپلوډر فایلونه د برخې کتنې او د عمومي اډمین وروستي تایید مخکې نه خپرېږي. افلاین کارونې لپاره فایلونه په موبایل کې ډاونلوډ کېدای شي.</Text>
+              {cloudflareBusy ? <View style={{ paddingVertical: 8, alignItems: 'center' }}><ActivityIndicator color={COLORS.gold} /><Text style={styles.smallMuted}>له آنلاین ډیټابېس سره اړیکه روانه ده...</Text></View> : null}
+              <Text style={[styles.smallMuted, { marginTop: 8 }]}>د آډیو، PDF او نورو رسنیو فایلونه په Cloudflare R2 کې ساتل کېږي؛ د اپلوډر فایلونه د برخې کتنې او د عمومي اډمین وروستي تایید مخکې نه خپرېږي. افلاین کارونې لپاره فایلونه په موبایل کې ډاونلوډ کېدای شي.</Text>
             </View>}
 
             {(!settingsSearch || 'ژبه language'.includes(settingsSearch.trim().toLowerCase())) && <>
@@ -8831,8 +8825,8 @@ export default function App() {
 
         {screen === 'formalLearning' && (
           <FormalLearning
-            user={firebaseUser}
-            role={firebaseRole}
+            user={cloudflareUser}
+            role={cloudflareRole}
             onBack={() => setScreen('learningPath')}
             onSettings={() => setScreen('settings')}
             onOpenLesson={item => openItem(item)}

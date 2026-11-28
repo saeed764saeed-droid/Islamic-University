@@ -1,19 +1,11 @@
-# د بدلونونو یادښت
+# د Cloudflare نسخې بدلونونه
 
-## Cloudflare Worker Admin Migration
-- د پنځو اداري عملیاتو غوښتنې له Firebase Callable Functions څخه Cloudflare Worker ته انتقال شوې.
-- د Worker لپاره د `FIREBASE_SERVICE_ACCOUNT` Secret له لارې د Google OAuth Service Account لاسرسی ورزیات شو.
-- د Firebase ID Token تصدیق او د Firestore `userRoles` له سند څخه د سرور-اړخ واک ارزونه ساتل شوې.
-- د Super Admin، Admin، Section Admin، Uploader رولونو او اجازو منطق انتقال شوی.
-- د وروستي فعال Super Admin د بندېدو مخنیوی ساتل شوی.
-- د درسونو forward/approve/reject او د R2 رسنیو د تایید/رد حالتونه Worker ته انتقال شوي.
-- Firebase deployment اوس یوازې Firestore Rules خپروي؛ Functions او Firebase Storage نه Deploy کوي.
-- موجود R2 bucket او `MY_BUCKET` binding ساتل شوي.
+- د اپلیکیشن Auth او Firestore عملیات د `cloudflareClient.js` له لارې Cloudflare Worker API ته واړول شول.
+- کارن حسابونه او رولونه په Cloudflare D1 کې ساتل کېږي؛ پاسورډونه PBKDF2-SHA256 hash کېږي.
+- د درسونو metadata، Pending/Review/Publish او رسمي زده کړو کورسونه د D1 له لارې اداره کېږي.
+- د آډیو، PDF، ویډیو او پوښونو فایلونه په Cloudflare R2 کې ساتل کېږي.
+- د Firebase SDK dependency، Firebase config، Firestore/Storage rules، Firebase Functions او Firebase deploy workflow لرې شول.
+- د اصلي App.js UI او محلي AsyncStorage کلیدونه ساتل شوي؛ د موبایل آفلاین فایلونو سیستم نه دی حذف شوی.
+- د Super Admin لومړنی حساب د `BOOTSTRAP_ADMIN_EMAIL` Worker secret له لارې محدود شوی.
 
-
-## 2026-11-26 – د Super Admin او Deploy اصلاحات
-- د تایید شوي مالک UID لپاره د Cloudflare Worker خوندي `/bootstrap/superadmin` لاره اضافه شوه.
-- د اپ تنظیماتو کې د مالک حساب لپاره د Super Admin فعالولو تڼۍ اضافه شوه.
-- GitHub Actions فایلونه `.github/workflows/` ته انتقال شول.
-- د Expo مالک او EAS Project ID د کارن له تایید شوو پروژوي معلوماتو سره برابر شول.
-- د Gradle/Expo config plugin لپاره مستقیم dependency ثبت شو او د ورک player artwork فایل reference لرې شو.
+د Worker/D1 حقیقي deploy او Android EAS build باید د Cloudflare او Expo حسابونو له لارې ترسره شي؛ محلي syntax کتنه د دې deploy بدیل نه دی.

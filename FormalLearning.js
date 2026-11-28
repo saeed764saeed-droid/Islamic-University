@@ -1,9 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, Alert, ScrollView, Share, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
-import { collection, getDocs, query, where, doc, onSnapshot } from 'firebase/firestore';
-import { getFunctions, httpsCallable } from 'firebase/functions';
-import { auth, db } from './firebaseClient';
-import { createUserWithEmailAndPassword, signInWithEmailAndPassword, sendEmailVerification, signOut } from 'firebase/auth';
+import { collection, getDocs, query, where, doc, onSnapshot, getFunctions, httpsCallable, auth, db, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut } from './cloudflareClient';
 
 const GOLD = '#E4C879';
 const BG = '#17231B';
@@ -52,14 +49,13 @@ export default function FormalLearning({ user, role, onBack, onSettings, onOpenL
   }, [user?.uid]);
 
   async function registerStudent() {
-    if (!studentEmail.trim() || studentPassword.length < 6) { setMessage('معتبر ایمیل او لږ تر لږه شپږ توري پاسورډ ولیکئ.'); return; }
+    if (!studentEmail.trim() || studentPassword.length < 8) { setMessage('معتبر ایمیل او لږ تر لږه ۸ توري پاسورډ ولیکئ.'); return; }
     setBusy(true); setMessage('');
     try {
       const credential = await createUserWithEmailAndPassword(auth, studentEmail.trim(), studentPassword);
-      await sendEmailVerification(credential.user);
       await signOut(auth);
       setStudentPassword('');
-      setMessage('د تایید لینک مو ایمیل ته ولېږل شو. Gmail خلاص کړئ، ایمیل تایید کړئ، بیا بېرته ننوتل وکړئ.');
+      setMessage('د زده‌کوونکي حساب جوړ شو. اوس د خپل ایمیل او پاسورډ له لارې ننوتل وکړئ.');
     } catch (e) { setMessage(e.message || 'د زده کوونکي حساب جوړ نه شو.'); }
     finally { setBusy(false); }
   }
@@ -68,12 +64,7 @@ export default function FormalLearning({ user, role, onBack, onSettings, onOpenL
     setBusy(true); setMessage('');
     try {
       const credential = await signInWithEmailAndPassword(auth, studentEmail.trim(), studentPassword);
-      await credential.user.reload();
-      if (!credential.user.emailVerified) {
-        await sendEmailVerification(credential.user);
-        await signOut(auth);
-        setMessage('ستاسې ایمیل لا تایید شوی نه دی. د تایید لینک مو بیا ولېږل شو؛ لومړی ایمیل تایید کړئ.');
-      } else { await credential.user.getIdToken(true); setStudentPassword(''); setMessage('رسمي زده‌کوونکي حساب ته ننوتل بریالي شول.'); }
+      await credential.user.getIdToken(true); setStudentPassword(''); setMessage('رسمي زده‌کوونکي حساب ته ننوتل بریالي شول.');
     } catch (e) { setMessage(e.message || 'ننوتل ناکام شول.'); }
     finally { setBusy(false); }
   }
@@ -83,7 +74,7 @@ export default function FormalLearning({ user, role, onBack, onSettings, onOpenL
     setCourses(snap.docs.map(d => ({ id: d.id, ...d.data() })));
   }
   async function enroll(course) {
-    if (!user) { Alert.alert('رسمي زده کړه', 'د رسمي کورس لپاره لومړی د Gmail ایمیل له لارې حساب ته ننوځئ.', [{ text: 'تنظیمات', onPress: onSettings }, { text: 'بېرته' }]); return; }
+    if (!user) { Alert.alert('رسمي زده کړه', 'د رسمي کورس لپاره لومړی د ایمیل او پاسورډ له لارې حساب جوړ او ننوتل وکړئ.', [{ text: 'تنظیمات', onPress: onSettings }, { text: 'بېرته' }]); return; }
     setBusy(true); setMessage('');
     try { await call('enrollFormalCourse')({ courseId: course.id }); setMessage('په رسمي کورس کې ثبت شوئ.'); }
     catch (e) { setMessage(e.message || 'ثبت ناکام شو.'); }
@@ -126,17 +117,17 @@ export default function FormalLearning({ user, role, onBack, onSettings, onOpenL
   return <View style={s.root}>
     <View style={s.header}><TouchableOpacity onPress={onBack}><Text style={s.back}>‹ بېرته</Text></TouchableOpacity><Text style={s.heading}>رسمي زده کړې او سند</Text></View>
     <ScrollView contentContainerStyle={s.content}>
-      <Text style={s.intro}>دا برخه د Gmail حساب لرونکو رسمي زده‌کوونکو لپاره ده. د کورس ټول درسونه بشپړ کړئ، وروستۍ ازموینه پاس کړئ او بیا خپل ډیجیټلي سند ترلاسه کړئ.</Text>
+      <Text style={s.intro}>دا برخه د ثبت شوي ایمیل حساب لرونکو رسمي زده‌کوونکو لپاره ده. د کورس ټول درسونه بشپړ کړئ، وروستۍ ازموینه پاس کړئ او بیا خپل ډیجیټلي سند ترلاسه کړئ.</Text>
       {!user && <View style={s.card}>
-        <Text style={s.text}>د رسمي زده کړو لپاره خپل Gmail ایمیل ثبت او تایید کړئ. بې له حسابه کاروونکي د عام کتابتون آډیو او PDF کارولی شي.</Text>
-        <TextInput style={s.input} autoCapitalize="none" keyboardType="email-address" placeholder="Gmail ایمیل" placeholderTextColor={MUTED} value={studentEmail} onChangeText={setStudentEmail}/>
-        <TextInput style={s.input} secureTextEntry placeholder="پاسورډ (لږ تر لږه ۶ توري)" placeholderTextColor={MUTED} value={studentPassword} onChangeText={setStudentPassword}/>
+        <Text style={s.text}>د رسمي زده کړو لپاره خپل ایمیل او لږ تر لږه ۸ توري پاسورډ ثبت کړئ. بې له حسابه کاروونکي د عام کتابتون آډیو او PDF کارولی شي.</Text>
+        <TextInput style={s.input} autoCapitalize="none" keyboardType="email-address" placeholder="ایمیل" placeholderTextColor={MUTED} value={studentEmail} onChangeText={setStudentEmail}/>
+        <TextInput style={s.input} secureTextEntry placeholder="پاسورډ (لږ تر لږه ۸ توري)" placeholderTextColor={MUTED} value={studentPassword} onChangeText={setStudentPassword}/>
         <Action title="نوی رسمي حساب جوړول" onPress={registerStudent} disabled={busy}/>
         <Action title="موجود حساب ته ننوتل" onPress={loginStudent} disabled={busy}/>
       </View>}
       {user && !user.emailVerified && <View style={s.card}>
-        <Text style={s.text}>د رسمي کورس لپاره باید ستاسې ایمیل تایید شوی وي. د تایید ایمیل بیا لېږلی شئ.</Text>
-        <Action title="د تایید ایمیل بیا ولېږه" onPress={async () => { try { await sendEmailVerification(auth.currentUser); await signOut(auth); setMessage('د تایید لینک ولېږل شو. ایمیل تایید کړئ او بیا ننوتل وکړئ.'); } catch(e) { setMessage(e.message || 'د تایید ایمیل ونه لېږل شو.'); } }} disabled={busy}/>
+        <Text style={s.text}>د رسمي کورس لپاره ثبت شوی حساب اړین دی.</Text>
+        <Text style={s.muted}>د حساب ننوتل د ایمیل او پاسورډ له لارې دي؛ د ایمیل تایید خدمت لا نه دی فعال.</Text>
       </View>}
       {!!message && <Text style={s.message}>{message}</Text>}
       {loading ? <ActivityIndicator color={GOLD} size="large"/> : selected ? <>

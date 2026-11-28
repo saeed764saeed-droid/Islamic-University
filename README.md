@@ -1,38 +1,24 @@
-# میراث اسلام – آنلاین او افلاین علمي کتابتون
+# میراث اسلام — Cloudflare Edition
 
-دا د React Native / Expo اپ بشپړه پروژه ده. د پخواني کتابتون، AsyncStorage کلیدونه، د لمانځه وختونه، اذکار، نوټونه، نښې، قرآن او حدیث جوړښت، PDF/آډیو پلیر او د کورپاڼې تنظیمات ساتل شوي دي.
+دا پروژه د اسلامي علمي کتابتون د React Native/Expo اپلیکیشن دی. د اصلي اپلیکیشن ډیزاین، د کتابونو او درسونو جوړښت، محلي تنظیمات، نوټونه، خوښې، اذکار، لمونځ وختونه، آفلاین فایلونه او نور موجود UI فیچرونه ساتل شوي دي.
 
-## د آنلاین سیستم جوړښت
-- Firebase Authentication د ننوتلو او د کارن د پېژندنې لپاره.
-- Firestore د رولونو، درسونو، رسنیو او audit معلوماتو لپاره.
-- Cloudflare Worker د اداري عملیاتو، د فایلونو اپلوډ، تایید، رد او خپرولو لپاره.
-- Cloudflare R2 د MP3، PDF او نورو فایلونو لپاره.
-- Firebase Functions او Firebase Storage د دې نسخې د deploy برخه نه دي؛ د Firebase Blaze پلان ته د Functions لپاره اړتیا نشته.
+## Backend
 
-## اداري رولونه
-پنځه رولونه شته: `superadmin`، `admin`، `sectionAdmin`، `uploader` او `user`. د دواړو موجودو Super Admin حسابونو `userRoles/{uid}` سندونه ساتل کېږي. د وروستي فعال Super Admin د بندېدو/لرې کېدو مخنیوی د Worker په سرور-اړخ کوډ کې شته.
+- Cloudflare Worker: API، ننوتل، رولونه، صلاحیتونه، د درسونو کتنه/خپرول او د رسنیو لاسرسی.
+- Cloudflare D1: د کارن حسابونه، رولونه، د درسونو metadata، کورسونه، enrollment، ازموینې او نور JSON اسناد.
+- Cloudflare R2: د آډیو، PDF، ویډیو او نورو رسنیو اصلي فایلونه.
+- موبایل: د کارن شخصي نوټونه، خوښې، تنظیمات او آفلاین فایلونه په محلي حافظه کې ساتي.
 
-## تر Deploy مخکې
-1. د Cloudflare Worker نوم `islamic-university-storage`، R2 binding `MY_BUCKET` او bucket `islamic-university-files` مه بدلوئ.
-2. په Worker Production Secrets کې `FIREBASE_SERVICE_ACCOUNT` باید د همدې Firebase پروژې د Service Account بشپړ JSON ولري.
-3. په Google Cloud IAM کې دې Service Account ته `Cloud Datastore User` (`roles/datastore.user`) او `Firebase Authentication Viewer` (`roles/firebaseauth.viewer`) ورکړئ.
-4. د GitHub Actions Secrets کې `CLOUDFLARE_API_TOKEN`، `FIREBASE_TOKEN` او د APK لپاره `EXPO_TOKEN` موجود وي.
-5. د `CLOUDFLARE_WORKER_ADMIN_SETUP_PASHTO.md` او `README-DEPLOY-PASHTO.md` لارښودونه تعقیب کړئ.
+**په دې پروژه کې د Firebase SDK، Firebase Authentication، Firestore، Firebase Functions، Firebase config او Firebase deploy workflow نشته.**
 
-**د Service Account JSON، خصوصي کیلي، پاسورډ او Token هېڅکله GitHub، App.js یا عام چټ ته مه پورته کوئ.**
+## د نصب او خپرولو لار
 
-## Android جوړول
-```bash
-npm ci
-npx expo-doctor
-eas build --platform android --profile preview
-```
-APK یوازې د EAS Build له بریالي بشپړېدو وروسته ترلاسه کېږي. د Backend د Deploy او ازموینې تر بشپړېدو مخکې Build مه کوئ.
+1. د Cloudflare بشپړ تنظیم، D1 database، secrets او R2 binding لپاره `CLOUDFLARE_MIGRATION_SETUP_PASHTO.md` ولولئ.
+2. د `worker/wrangler.toml` د `database_id` ارزښت د خپل Cloudflare D1 ID سره بدل کړئ.
+3. د D1 schema تطبیق او Worker deploy کړئ.
+4. د اپ ریښه کې `npm install` او بیا `npx expo start` یا د EAS Android build اجرا کړئ.
+5. د لومړي ستر اډمین لپاره، د `BOOTSTRAP_ADMIN_EMAIL` ایمیل په وسیله د Formal Learning له برخې حساب جوړ کړئ، بیا په Settings کې ننوتل او د Super Admin فعالولو تڼۍ وکاروئ.
 
-## د ازموینې حالت
-د Worker JavaScript syntax او د App.js JSX parsing کتنه شوې؛ خو د Cloudflare حقیقي Deploy، د Google IAM اجازې، د Firebase/Worker end-to-end عملیات او د Android APK Build لا په دې چاپېریال کې نه دي اجرا شوي. نو دا ZIP د Deploy او حقیقي ازموینې لپاره چمتو شوی، خو لا د تولید لپاره تایید شوی release نه دی.
+## د ازموینې حدود
 
-
-## First Super Admin bootstrap
-
-The verified owner UID is `CtaXP0WGrFfusIKSsMFYP4ZKb6P2`. After deploying `worker/index.js`, sign in to the app with that Firebase account and use the owner-only button in Settings. The Worker verifies the Firebase ID token and writes the `userRoles/{uid}` record using its Cloudflare secret. Never commit the Firebase service-account JSON.
+په دې چاپېریال کې د Worker JavaScript syntax، د D1 schema، د پروژې د Firebase importونو حذف او د ZIP جوړښت محلي کتنه کېږي. د کارن د Cloudflare حساب ته لاسرسی نه لرو؛ نو D1 database باید د کارن په حساب کې جوړ، secretونه ثبت او Worker deploy شي. تر دې کارونو او د حقیقي Android device د end-to-end ازموینې مخکې دا فایلونه د بشپړ deploy شوي production release په توګه مه ګڼئ.
