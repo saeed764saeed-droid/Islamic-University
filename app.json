@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "میراث اسلام",
+    "name": "اسلامي علمي کتابتون",
     "slug": "mirath-islam",
     "owner": "meera99",
     "version": "1.0.0",
@@ -8,24 +8,19 @@
     "userInterfaceStyle": "dark",
     "android": {
       "package": "com.bookstore13579.mirathislam",
+      "versionCode": 1,
       "permissions": [
         "android.permission.READ_EXTERNAL_STORAGE",
         "android.permission.WRITE_EXTERNAL_STORAGE",
         "android.permission.DOWNLOAD_WITHOUT_NOTIFICATION",
         "android.permission.ACCESS_NETWORK_STATE"
-      ],
-      "adaptiveIcon": {
-        "foregroundImage": "./assets/app-icon.png",
-        "backgroundColor": "#03401F"
-      }
+      ]
     },
     "extra": {
       "eas": {
         "projectId": "39639608-736f-406f-9327-3dd2d5479dec"
       }
     },
-    "description": "اسلامي علمي کتابتون",
-    "icon": "./assets/app-icon.png",
-    "newArchEnabled": false
+    "description": "اسلامي علمي کتابتون"
   }
 }

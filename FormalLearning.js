@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, Alert, ScrollView, Share, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
-import { collection, getDocs, query, where, doc, onSnapshot, getFunctions, httpsCallable, auth, db, createUserWithEmailAndPassword, signInWithEmailAndPassword, confirmEmailVerification, resendEmailVerificationCode } from './cloudflareClient';
+import { collection, getDocs, query, where, doc, onSnapshot, getFunctions, httpsCallable, auth, db, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut } from './cloudflareClient';
 
 const GOLD = '#E4C879';
 const BG = '#17231B';
@@ -19,8 +19,6 @@ export default function FormalLearning({ user, role, onBack, onSettings, onOpenL
   const [message, setMessage] = useState('');
   const [studentEmail, setStudentEmail] = useState('');
   const [studentPassword, setStudentPassword] = useState('');
-  const [pendingVerificationEmail, setPendingVerificationEmail] = useState('');
-  const [verificationCode, setVerificationCode] = useState('');
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [passPercent, setPassPercent] = useState('70');
@@ -54,42 +52,11 @@ export default function FormalLearning({ user, role, onBack, onSettings, onOpenL
     if (!studentEmail.trim() || studentPassword.length < 8) { setMessage('معتبر ایمیل او لږ تر لږه ۸ توري پاسورډ ولیکئ.'); return; }
     setBusy(true); setMessage('');
     try {
-      const email = studentEmail.trim().toLowerCase();
-      const result = await createUserWithEmailAndPassword(auth, email, studentPassword);
-      if (!result?.pendingVerification) throw new Error('د تایید غوښتنه په سمه توګه ثبت نه شوه.');
-      setPendingVerificationEmail(email);
-      setVerificationCode('');
+      const credential = await createUserWithEmailAndPassword(auth, studentEmail.trim(), studentPassword);
+      await signOut(auth);
       setStudentPassword('');
-      setMessage(`شپږ عددي تاییدي کوډ ${email} ته ولېږل شو. خپل Gmail وګورئ او کوډ لاندې ولیکئ.`);
+      setMessage('د زده‌کوونکي حساب جوړ شو. اوس د خپل ایمیل او پاسورډ له لارې ننوتل وکړئ.');
     } catch (e) { setMessage(e.message || 'د زده کوونکي حساب جوړ نه شو.'); }
-    finally { setBusy(false); }
-  }
-  async function verifyStudentEmail() {
-    const email = pendingVerificationEmail || studentEmail.trim().toLowerCase();
-    const code = verificationCode.trim();
-    if (!email || !/^\d{6}$/.test(code)) {
-      setMessage('د Gmail شپږ عددي کوډ په سمه توګه ولیکئ.');
-      return;
-    }
-    setBusy(true); setMessage('');
-    try {
-      await confirmEmailVerification(email, code);
-      setPendingVerificationEmail('');
-      setVerificationCode('');
-      setStudentPassword('');
-      setMessage('Gmail تایید شو او حساب فعال شو. اوس رسمي زده کړې کارولی شئ.');
-    } catch (e) {
-      setMessage(e.message || 'کوډ تایید نه شو. کوډ بیا وګورئ.');
-    } finally { setBusy(false); }
-  }
-  async function resendStudentCode() {
-    const email = pendingVerificationEmail || studentEmail.trim().toLowerCase();
-    if (!email) { setMessage('لومړی خپل Gmail ولیکئ.'); return; }
-    setBusy(true); setMessage('');
-    try {
-      await resendEmailVerificationCode(email);
-      setMessage(`نوی شپږ عددي کوډ ${email} ته ولېږل شو.`);
-    } catch (e) { setMessage(e.message || 'نوی کوډ ونه لېږل شو.'); }
     finally { setBusy(false); }
   }
   async function loginStudent() {
@@ -153,17 +120,10 @@ export default function FormalLearning({ user, role, onBack, onSettings, onOpenL
       <Text style={s.intro}>دا برخه د ثبت شوي ایمیل حساب لرونکو رسمي زده‌کوونکو لپاره ده. د کورس ټول درسونه بشپړ کړئ، وروستۍ ازموینه پاس کړئ او بیا خپل ډیجیټلي سند ترلاسه کړئ.</Text>
       {!user && <View style={s.card}>
         <Text style={s.text}>د رسمي زده کړو لپاره خپل ایمیل او لږ تر لږه ۸ توري پاسورډ ثبت کړئ. بې له حسابه کاروونکي د عام کتابتون آډیو او PDF کارولی شي.</Text>
-        <TextInput style={s.input} autoCapitalize="none" keyboardType="email-address" placeholder="ایمیل" placeholderTextColor={MUTED} value={studentEmail} onChangeText={value => { setStudentEmail(value); if (!pendingVerificationEmail) setMessage(''); }}/>
-        {!pendingVerificationEmail ? <>
-          <TextInput style={s.input} secureTextEntry placeholder="پاسورډ (لږ تر لږه ۸ توري)" placeholderTextColor={MUTED} value={studentPassword} onChangeText={setStudentPassword}/>
-          <Action title="نوی رسمي حساب جوړول" onPress={registerStudent} disabled={busy}/>
-          <Action title="موجود حساب ته ننوتل" onPress={loginStudent} disabled={busy}/>
-        </> : <>
-          <Text style={s.muted}>د تایید کوډ دې ایمیل ته لېږل شوی: {pendingVerificationEmail}</Text>
-          <TextInput style={s.input} keyboardType="number-pad" maxLength={6} placeholder="شپږ عددي کوډ" placeholderTextColor={MUTED} value={verificationCode} onChangeText={value => setVerificationCode(value.replace(/[^0-9]/g, '').slice(0,6))}/>
-          <Action title="د Gmail کوډ تاییدول" onPress={verifyStudentEmail} disabled={busy}/>
-          <Action title="نوی کوډ بیا لېږل" onPress={resendStudentCode} disabled={busy}/>
-        </>}
+        <TextInput style={s.input} autoCapitalize="none" keyboardType="email-address" placeholder="ایمیل" placeholderTextColor={MUTED} value={studentEmail} onChangeText={setStudentEmail}/>
+        <TextInput style={s.input} secureTextEntry placeholder="پاسورډ (لږ تر لږه ۸ توري)" placeholderTextColor={MUTED} value={studentPassword} onChangeText={setStudentPassword}/>
+        <Action title="نوی رسمي حساب جوړول" onPress={registerStudent} disabled={busy}/>
+        <Action title="موجود حساب ته ننوتل" onPress={loginStudent} disabled={busy}/>
       </View>}
       {user && !user.emailVerified && <View style={s.card}>
         <Text style={s.text}>د رسمي کورس لپاره ثبت شوی حساب اړین دی.</Text>

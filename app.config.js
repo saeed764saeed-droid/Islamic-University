@@ -2,7 +2,7 @@
 const {
   withDangerousMod,
   withPlugins
-} = require("expo/config-plugins");
+} = require("@expo/config-plugins");
 
 const fs = require("fs");
 const path = require("path");
@@ -49,8 +49,7 @@ module.exports = ({ config }) => {
     [
       "@config-plugins/react-native-blob-util",
       "@config-plugins/react-native-pdf",
-      "react-native-zip-archive",
-      ["expo-audio", { "enableBackgroundPlayback": true }]
+      "react-native-zip-archive"
     ]
   );
 };
