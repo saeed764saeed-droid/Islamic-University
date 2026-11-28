@@ -19,7 +19,7 @@ import {
 } from 'react-native';
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { auth, db, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, collection, doc, getDoc, getDocs, onSnapshot, query, where, orderBy, documentId, startAfter, limit, setDoc, deleteDoc, serverTimestamp } from './cloudflareClient';
+import { auth, db, onAuthStateChanged, signInWithEmailAndPassword, signOut, collection, doc, getDoc, getDocs, onSnapshot, query, where, orderBy, documentId, startAfter, limit, setDoc, deleteDoc, serverTimestamp } from './cloudflareClient';
 import FormalLearning from './FormalLearning';
 
 import * as DocumentPicker from 'expo-document-picker';
@@ -1251,29 +1251,6 @@ export default function App() {
     } catch (error) {
       console.error('Super Admin bootstrap error:', error);
       Alert.alert('د ستر اډمین ستونزه', error?.message || 'د ستر اډمین واک ثبت نه شو.');
-    } finally {
-      setCloudflareBusy(false);
-    }
-  }
-
-  async function cloudflareCreateAccount() {
-    const email = cloudflareEmail.trim().toLowerCase();
-    if (!email || !cloudflarePassword) {
-      Alert.alert('اړین معلومات', 'خپل ایمیل او نوی پاسورډ ولیکئ.');
-      return;
-    }
-    if (cloudflarePassword.length < 8) {
-      Alert.alert('کمزوری پاسورډ', 'پاسورډ باید لږ تر لږه ۸ توري ولري.');
-      return;
-    }
-    try {
-      setCloudflareBusy(true);
-      await createUserWithEmailAndPassword(auth, email, cloudflarePassword);
-      setCloudflarePassword('');
-      Alert.alert('حساب جوړ شو', 'حساب جوړ او داخل شو. اوس د همدې ایمیل لپاره د ستر اډمین فعالولو تڼۍ وکاروئ.');
-    } catch (error) {
-      console.error('Cloudflare account creation error:', error);
-      Alert.alert('د حساب جوړولو ستونزه', error?.message || 'حساب جوړ نه شو. د Worker، D1 او AUTH_SECRET تنظیمات وګورئ.');
     } finally {
       setCloudflareBusy(false);
     }
@@ -8374,8 +8351,6 @@ export default function App() {
                 <TextInput value={cloudflareEmail} onChangeText={setCloudflareEmail} placeholder="د مدیر/اپلوډر ایمیل" placeholderTextColor={COLORS.muted} keyboardType="email-address" autoCapitalize="none" autoCorrect={false} style={[styles.designColorInput, { marginTop: 10 }]} textAlign="left" />
                 <TextInput value={cloudflarePassword} onChangeText={setCloudflarePassword} placeholder="پاسورډ" placeholderTextColor={COLORS.muted} secureTextEntry style={[styles.designColorInput, { marginTop: 8 }]} textAlign="left" />
                 <GoldButton title={cloudflareBusy ? 'نښلول کېږي...' : 'Cloudflare ته ننوتل'} secondary onPress={cloudflareAdminLogin} />
-                <GoldButton title={cloudflareBusy ? 'حساب جوړېږي...' : '＋ نوی Cloudflare حساب جوړول'} onPress={cloudflareCreateAccount} />
-                <Text style={styles.smallMuted}>د نوي حساب لپاره معتبر ایمیل او لږ تر لږه ۸ توري پاسورډ ولیکئ. نوی حساب په پیل کې عادي کارن وي؛ ستر اډمین یوازې د BOOTSTRAP_ADMIN_EMAIL له تایید وروسته فعالېږي.</Text>
               </>}
               {cloudflareBusy ? <View style={{ paddingVertical: 8, alignItems: 'center' }}><ActivityIndicator color={COLORS.gold} /><Text style={styles.smallMuted}>له آنلاین ډیټابېس سره اړیکه روانه ده...</Text></View> : null}
               <Text style={[styles.smallMuted, { marginTop: 8 }]}>د آډیو، PDF او نورو رسنیو فایلونه په Cloudflare R2 کې ساتل کېږي؛ د اپلوډر فایلونه د برخې کتنې او د عمومي اډمین وروستي تایید مخکې نه خپرېږي. افلاین کارونې لپاره فایلونه په موبایل کې ډاونلوډ کېدای شي.</Text>
